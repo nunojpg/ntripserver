@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id$
+/* $Id: NtripLinuxServer.c,v 1.2 2004/07/14 10:09:22 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -468,7 +468,7 @@ int openserial (u_char * tty, int blocksz, int ttybaud)
   
 #if (B4800 != 4800)
   /*
-   * Only paleolithic systems need this.
+   * Not every system has speed settings equal to absolute speed value.
    */
   
   switch (ttybaud)
@@ -494,7 +494,23 @@ int openserial (u_char * tty, int blocksz, int ttybaud)
     case 38400:
       ttybaud = B38400;
       break;
+#ifdef B57600
+    case 57600:
+      ttybaud = B57600;
+      break;
+#endif
+#ifdef B115200
+    case 115200:
+      ttybaud = B115200;
+      break;
+#endif
+#ifdef B230400
+    case 230400:
+      ttybaud = B230400;
+      break;
+#endif
     default:
+      fprintf(stderr, "Baud settings not useful, using 19200\n");
       ttybaud = B19200;
       break;
     }
