@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.3 2005/02/08 16:22:51 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.4 2005/02/15 15:53:39 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -66,7 +66,7 @@
 #include <fcntl.h>
 #include "NtripServerLinux.h"
 
-#define VERSION "NTRIP NtripServerLinux/0.8"
+#define VERSION "NTRIP NtripServerLinux/0.9"
 
 #define SIMULATE  0
 #define SERIAL    1
