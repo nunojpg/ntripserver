@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.6 2005/02/16 15:23:36 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.7 2005/02/17 09:22:23 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -136,6 +136,16 @@ int main (int argc, char ** argv)
   
   struct sockaddr_in in_addr;
   struct sockaddr_in out_addr;
+
+  if(!(outhost = gethostbyname(NTRIP_CASTER)))
+  {
+    fprintf(stderr, "host %s unknown\n\n", NTRIP_CASTER);
+  }
+  else
+  {
+    memset((char *) &out_addr, 0x00, sizeof(out_addr));
+    memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
+  }
 
   //get and check program arguments
   if (argc <=1)
