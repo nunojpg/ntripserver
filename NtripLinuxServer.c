@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.2 2004/07/14 10:09:22 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.3 2005/02/08 16:22:51 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -582,11 +582,3 @@ void usage (int rc)
   fprintf (stderr, "    \n");
   exit (rc);
 }
-
-
-
-
-
-
-
-
