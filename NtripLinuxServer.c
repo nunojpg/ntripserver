@@ -40,7 +40,7 @@
  * USA.
  */
 
-/*
+/* $Id$
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -66,7 +66,7 @@
 #include <fcntl.h>
 #include "NtripServerLinux.h"
 
-#define VERSION "NTRIP NtripServerLinux0.8"
+#define VERSION "NTRIP NtripServerLinux/0.8"
 
 #define SIMULATE  0
 #define SERIAL    1
@@ -112,9 +112,9 @@ void usage (int);
 
 int main (int argc, char ** argv)
 {
-  u_char       * ttyin = ttyport,  buf[BUFSZ];
+  u_char       * ttyin = ttyport;
   char         * logfilepath = NULL;
-  FILE         * logfile = NULL, *fp = NULL;
+  FILE         * fp = NULL;
   int            c, gpsfd = -1;
   int            size = 2048;		//for setting send buffer size
   
@@ -559,7 +559,7 @@ void usage (int rc)
   fprintf (stderr, "       default/current value is %d\n", ttybaud);
   fprintf (stderr, "    -i input_device, sets name of serial input device\n");
   fprintf (stderr, "       default/current value is %s\n", ttyport);
-  fprintf (stderr, "       (normally a symbolic link to /dev/tty??)\n");
+  fprintf (stderr, "       (normally a symbolic link to /dev/tty\?\?)\n");
   fprintf (stderr, "  Mode = tcpsocket:\n");
   fprintf (stderr, "    -P receiver port (default: 1025)\n");
   fprintf (stderr, "    -H hostname of TCP server (default: 127.0.0.1)\n");
