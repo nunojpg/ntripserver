@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.5 2005/02/15 16:15:33 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.6 2005/02/16 15:23:36 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -54,7 +54,7 @@
 
 /* Changes - Version 0.9
  * Feb 15 2005  Dirk Stoecker <soft@dstoecker.de>
- * /
+ */
  
 #include <stdio.h>
 #include <string.h>
