@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- * Copyright (c) 2003
+ * Copyright (c) 2003...2005
  * German Federal Agency for Cartography and Geodesy (BKG)
  *
  * Developed for Networked Transport of RTCM via Internet Protocol (NTRIP)
@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.4 2005/02/15 15:53:39 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.5 2005/02/15 16:15:33 stoecker Exp $
  * Changes -  Version 0.7
  * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
  * 
@@ -52,6 +52,10 @@
  *           - help screen
  */
 
+/* Changes - Version 0.9
+ * Feb 15 2005  Dirk Stoecker <soft@dstoecker.de>
+ * /
+ 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -77,7 +81,7 @@
 #define SERV_TCP_PORT 1025
 
 /* default destination */
-#define NTRIP_CASTER "129.217.182.51"
+#define NTRIP_CASTER "www.euref-ip.net"
 #define NTRIP_PORT 80
 
 int verbose = 0;
