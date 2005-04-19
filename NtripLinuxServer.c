@@ -1,5 +1,5 @@
 /*
- * main.c
+ * NtripServerLinux.c
  *
  * Copyright (c) 2003...2005
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -40,61 +40,70 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.7 2005/02/17 09:22:23 stoecker Exp $
- * Changes -  Version 0.7
- * Thu Sep 22 08:10:45  2003    actina AG <http://www.actina.de>
- * 
- *         Steffen Tschirpke <St.Tschirpke@actina.de>
- *         * main.c
+/* $Id: NtripLinuxServer.c,v 1.8 2005/03/21 13:02:47 stoecker Exp $
+ * Changes - Version 0.7
+ * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
  *           - command line option handling
  *           - error handling
  *           - help screen
+ *
+ * Changes - Version 0.9
+ * Feb 15 2005  Dirk Stoecker <soft@dstoecker.de>
+ *           - some minor updates, fixed serial baudrate settings
+ *
+ * Changes - Version 0.10
+ * Apr 05 2005  Dirk Stoecker <soft@dstoecker.de>
+ *           - some cleanup and miscellaneous fixes
+ *           - replaced non-working simulate with file input (stdin)
+ *           - TCP sending now somewhat more stable
+ *           - cleanup of error handling
  */
 
-/* Changes - Version 0.9
- * Feb 15 2005  Dirk Stoecker <soft@dstoecker.de>
- */
- 
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <getopt.h>
+#include <netdb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <netdb.h>
-#include <getopt.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/termios.h>
-#include <fcntl.h>
-#include "NtripServerLinux.h"
+#include <sys/types.h>
 
-#define VERSION "NTRIP NtripServerLinux/0.9"
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0 /* prevent compiler errors */
+#endif
+#ifndef O_EXLOCK
+#define O_EXLOCK 0 /* prevent compiler errors */
+#endif
 
-#define SIMULATE  0
-#define SERIAL    1
-#define TCPSOCKET 2
+enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3 };
+
+#define VERSION         "NTRIP NtripServerLinux/0.10"
+#define BUFSZ           1024
 
 /* default socket source */
-#define SERV_HOST_ADDR "127.0.0.1"
-#define SERV_TCP_PORT 1025
+#define SERV_HOST_ADDR  "127.0.0.1"
+#define SERV_TCP_PORT   1025
 
 /* default destination */
-#define NTRIP_CASTER "www.euref-ip.net"
-#define NTRIP_PORT 80
+#define NTRIP_CASTER    "www.euref-ip.net"
+#define NTRIP_PORT      80
 
-int verbose = 0;
-int simulate = 0;
-int tickinterval = 1;
-int ttybaud = 19200;
-char * ttyport = "/dev/gps";
-int mode = 0;
+int ttybaud             = 19200;
+char *ttyport           = "/dev/gps";
+char *filepath          = "/dev/stdin";
+enum MODE mode          = INFILE;
 
 /* Forward references */
-int openserial (u_char * tty, int blocksz, int ttybaud);
-int send_receive_loop(int socket, int fd);
-void usage (int);
+int openserial(u_char * tty, int blocksz, int ttybaud);
+void send_receive_loop(int socket, int fd);
+void usage(int);
 
 /*
 * main
@@ -114,32 +123,29 @@ void usage (int);
 *
 */
 
-int main (int argc, char ** argv)
+int main(int argc, char **argv)
 {
-  u_char       * ttyin = ttyport;
-  char         * logfilepath = NULL;
-  FILE         * fp = NULL;
-  int            c, gpsfd = -1;
-  int            size = 2048;		//for setting send buffer size
-  
+  u_char *ttyin = ttyport;
+  int c, gpsfd = -1;
+  int size = 2048;              /* for setting send buffer size */
+
   unsigned int out_port = 0;
   unsigned int in_port = 0;
-  char         *mountpoint = NULL;
-  char         *password = NULL;
-  int          sock_id;
-  char         szSendBuffer[BUFSZ];
-  int          nBufferBytes;
-  int          sockfd;
+  char *mountpoint = NULL;
+  char *password = "";
+  int sock_id;
+  char szSendBuffer[BUFSZ];
+  int nBufferBytes;
 
   struct hostent *inhost;
   struct hostent *outhost;
-  
+
   struct sockaddr_in in_addr;
   struct sockaddr_in out_addr;
 
   if(!(outhost = gethostbyname(NTRIP_CASTER)))
   {
-    fprintf(stderr, "host %s unknown\n\n", NTRIP_CASTER);
+    fprintf(stderr, "WARNING: host %s unknown\n", NTRIP_CASTER);
   }
   else
   {
@@ -147,286 +153,285 @@ int main (int argc, char ** argv)
     memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
   }
 
-  //get and check program arguments
-  if (argc <=1)
+  /* get and check program arguments */
+  if(argc <= 1)
+  {
+    usage(2);
+    exit(1);
+  }
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:")) != EOF)
+  {
+    switch (c)
     {
-      usage(2);
-      exit(1);
-    }
-  while ((c = getopt (argc, argv, "M:i:h:b:p:s:a:m:c:H:P:")) != EOF)
-    {
-      switch (c)
-        {
-        case 'M':
-          mode = atoi(optarg);
-          if ((mode == 0) || (mode > 3))
-            {
-              fprintf (stderr, "can't convert %s to a valid mode\n\n", optarg);
-              usage(-1);
-            }
-          break;
-       	case 'i':		/* gps serial ttyin */
-          ttyin = optarg;
-          break;
-        case 'b':		/* serial ttyin speed */
-          ttybaud = atoi (optarg);
-          if (ttybaud <= 1)
-            {
-              fprintf (stderr, "can't convert %s to valid ttyin speed\n\n", optarg);
-              usage(1);
-            }
-          break;
-        case 'a':		/* http server IP address A.B.C.D*/
-          outhost = gethostbyname(optarg);
-          if (outhost == NULL)
-            {
-              fprintf (stderr, "host %s unknown\n\n", optarg);
-              usage(-2);
-            }
-          memset((char *) &out_addr, 0x00, sizeof(out_addr));
-          memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
-          break;
-        case 'p':		/* http server port*/
-          out_port = atoi(optarg);
-          if (out_port <= 1)
-            {
-              fprintf (stderr, "can't convert %s to a valid http server port\n\n", optarg);
-              usage(1);
-            }
-          break;
-        case 'm':		/* http server mountpoint*/
-          mountpoint = optarg;
-          break;
-        case 's':		/* simulate datastream from file */
-          logfilepath = optarg;
-          break;
-        case 'c':               /* password */
-          password=optarg;
-          break;
-        case 'H':               /* host */
-          inhost = gethostbyname(optarg);
-          if (inhost == NULL)
-            {
-              /* TODO Errorhandling/Debugging - Output */
-              fprintf (stderr, "host %s unknown\n\n", optarg);
-              usage(-2);
-            }
-          memset((char *) &in_addr, 0x00, sizeof(in_addr));
-          memcpy(&in_addr.sin_addr, inhost->h_addr, inhost->h_length);
-          break;
-        case 'P':               /* port */
-          in_port = atoi(optarg);
-          if (in_port <= 1)
-            {
-              /* TODO Errorhandling/Debugging - Output */
-              fprintf (stderr, "can't convert %s to a valid receiver port\n\n", optarg);
-              usage(1);
-            }
-          break;
-        case 'h':               /* help */
-        case '?':
-          usage(0);
-          break;
-        default:
-          usage(2);
-          break;
-        }
-      
-      if (in_port <= 0 )
-        {
-          in_port = SERV_TCP_PORT;
-        }
-      if (out_port <= 0 )
-        {
-          out_port = NTRIP_PORT;
-        }
-    }
- 
-  argc -= optind;
-  argv += optind;
-  
-  if (argc > 0)
-    {
-      /* TODO Errorhandling/Debugging - Output */
-      fprintf (stderr, "Extra args on command line.\n");
-      for (; argc > 0; argc--)
-        {
-          fprintf (stderr, " %s", *argv++);
-        }
-      fprintf (stderr, "\n");
-      usage (1);		/* never returns */
-    }
-  
-  if ((mode ==SIMULATE) && (tickinterval <= 0))
-    {
-      /* TODO Errorhandling/Debugging - Output */
-      fprintf (stderr, "-t parameter must be positive in simulator mode\n");
-      exit (1);
-    }
-  
-  if (verbose >= 1)
-    fprintf (stderr, "%s\n", VERSION);
-  if (mountpoint == NULL)
-    {
-      /* TODO Errorhandling/Debugging - Output */
-      fprintf(stderr,"missing mountpoint arguement\n");
-      exit(1);
-    }
-  //print program arguments on screen
-  /* TODO Errorhandling/Debugging - Output */
-  // printf("\ncaster IP :\t%s\nport :\t%d\nmountpoint :\t%s\npassword :\t%s\n\n",address,port,mountpoint,(password==NULL)?"none":"yes");
-  if (password == NULL)
-    {
-      password="\0";				
-    }
-  
-  switch (mode)
-    {
-    case SIMULATE:
+    case 'M':
+      mode = atoi(optarg);
+      if((mode == 0) || (mode > 3))
       {
-        fp = fopen (logfilepath, "r");
-        if (!fp)
-          {
-            /* TODO Errorhandling/Debugging - Output */
-            perror ("fopen logfile");
-            exit (1);
-          }
+        fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
+        usage(-1);
       }
       break;
-    case SERIAL:          //open serial port
+    case 'i':                  /* gps serial ttyin */
+      ttyin = optarg;
+      break;
+    case 'b':                  /* serial ttyin speed */
+      ttybaud = atoi(optarg);
+      if(ttybaud <= 1)
       {
-        gpsfd = openserial (ttyin, 1, ttybaud);
-        fp = fdopen (gpsfd, "r");
-        if (!fp)
-          {
-            /* TODO Errorhandling/Debugging - Output */
-            perror ("fdopen gps");
-            exit (1);
-          }
+        fprintf(stderr, "ERROR: can't convert %s to valid serial speed\n", optarg);
+        usage(1);
       }
       break;
-    case TCPSOCKET:
+    case 'a':                  /* http server IP address A.B.C.D */
+      outhost = gethostbyname(optarg);
+      if(outhost == NULL)
       {
-        in_addr.sin_family      = AF_INET;
-        in_addr.sin_port        = htons(in_port);  
-        
-        if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-          {
-            /* TODO Errorhandling/Debugging - Output */
-            fprintf (stderr, "can't create socket\n");
-            exit(1);
-          }
-        
-        /* TODO Errorhandling/Debugging - Output */
-        printf("connecting input ...\n");
-        fprintf (stderr, "socket input:\n");
-        fprintf (stderr, "\tHost: %s\n", inet_ntoa(in_addr.sin_addr));
-        fprintf (stderr, "\tPort: %d\n", in_port);
-        
-        if (connect(sockfd, (struct sockaddr *) &in_addr, sizeof(in_addr)) < 0)
-          {
-            /* TODO Errorhandling/Debugging - Output */
-            fprintf (stderr, "can't connect input to %s at port %d\n", inet_ntoa(in_addr.sin_addr), in_port);
-            //  exit(1);
-          } 
-        gpsfd = sockfd;
+        fprintf(stderr, "ERROR: host %s unknown\n", optarg);
+        usage(-2);
       }
+      memset((char *) &out_addr, 0x00, sizeof(out_addr));
+      memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
+      break;
+    case 'p':                  /* http server port */
+      out_port = atoi(optarg);
+      if(out_port <= 1)
+      {
+        fprintf(stderr, "ERROR: can't convert %s to a valid HTTP server port\n",
+          optarg);
+        usage(1);
+      }
+      break;
+    case 'm':                  /* http server mountpoint */
+      mountpoint = optarg;
+      break;
+    case 'f':                  /* datastream from file */
+      filepath = optarg;
+      break;
+    case 'c':                  /* password */
+      password = optarg;
+      break;
+    case 'H':                  /* host */
+      inhost = gethostbyname(optarg);
+      if(inhost == NULL)
+      {
+        fprintf(stderr, "ERROR: host %s unknown\n", optarg);
+        usage(-2);
+      }
+      memset((char *) &in_addr, 0x00, sizeof(in_addr));
+      memcpy(&in_addr.sin_addr, inhost->h_addr, inhost->h_length);
+      break;
+    case 'P':                  /* port */
+      in_port = atoi(optarg);
+      if(in_port <= 1)
+      {
+        fprintf(stderr, "ERROR: can't convert %s to a valid receiver port\n",
+          optarg);
+        usage(1);
+      }
+      break;
+    case 'h':                  /* help */
+    case '?':
+      usage(0);
       break;
     default:
-      usage(-1);
+      usage(2);
       break;
     }
-  
-  out_addr.sin_family = AF_INET;
-  out_addr.sin_port = htons((u_short)(out_port));
 
-  // ----- main part -----
-  while(1)
+    if(in_port <= 0)
     {
-      //create socket
-      if ((sock_id = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-        {
-          /* TODO Errorhandling/Debugging - Output */
-          printf("ERROR : could not create socket\n");
-          // sleep(5);
-          exit(2);
-  	}
-      //connect to caster
-      printf("connecting output ...\n");
-      fprintf (stderr, "caster output:\n");
-      fprintf (stderr, "\tHost: %s\n", inet_ntoa(out_addr.sin_addr));
-      fprintf (stderr, "\tPort: %d\n", out_port);
-      if (connect(sock_id, (struct sockaddr *) &out_addr, sizeof(out_addr)) < 0)
-        {
-          /* TODO Errorhandling/Debugging - Output */
-          fprintf (stderr, "can't connect output to %s at port %d\n", inet_ntoa(out_addr.sin_addr), out_port);
-          close(sock_id);
-          // sleep(5);
-          exit(3);
-  	}
-	
-      /* TODO Errorhandling/Debugging - Output */
-      printf("connection succesfull\n");
-      //set socket buffer size
-      setsockopt(sock_id,SOL_SOCKET,SO_SNDBUF,(const char *) &size,sizeof(const char *));
-      //send message to caster
-      szSendBuffer[0] = '\0';
-      sprintf(szSendBuffer,"SOURCE %s /%s\r\n",password,mountpoint);
-      strcat(szSendBuffer,"Source-Agent: ");
-      strcat(szSendBuffer,VERSION);
-      strcat(szSendBuffer, "\r\n");
-      strcat(szSendBuffer, "\r\n");
-      strcat(szSendBuffer, "\0");
-      nBufferBytes=strlen(szSendBuffer);
-      if ((send(sock_id, szSendBuffer, nBufferBytes, 0)) != nBufferBytes)
-        {
-          /* TODO Errorhandling/Debugging - Output */
-	  fprintf(stderr, "ERROR : could not send to caster\n");		
-          close(sock_id);
-          sleep(5);
-          exit(0);
-        }
-      //check caster's response
-      nBufferBytes=recv(sock_id,szSendBuffer,sizeof(szSendBuffer),0);
-      szSendBuffer[nBufferBytes]='\0';
-      if(strcmp(szSendBuffer,"OK\r\n"))
-        {
-          /* TODO Errorhandling/Debugging - Output */
-          fprintf(stderr,"caster's reply is not OK\n");	
-          close(sock_id);
-          sleep(5);
-          exit(0);
-        }
-      send_receive_loop(sock_id, gpsfd);
+      in_port = SERV_TCP_PORT;
     }
+    if(out_port <= 0)
+    {
+      out_port = NTRIP_PORT;
+    }
+  }
+
+  argc -= optind;
+  argv += optind;
+
+  if(argc > 0)
+  {
+    fprintf(stderr, "ERROR: Extra args on command line: ");
+    for(; argc > 0; argc--)
+    {
+      fprintf(stderr, " %s", *argv++);
+    }
+    fprintf(stderr, "\n");
+    usage(1);                   /* never returns */
+  }
+
+  if(mountpoint == NULL)
+  {
+    fprintf(stderr, "ERROR: Missing mountpoint argument\n");
+    exit(1);
+  }
+  if(!password[0])
+  {
+    fprintf(stderr, "WARNING: Missing password argument - are you really sure?\n");
+  }
+
+  switch (mode)
+  {
+  case INFILE:
+    {
+      gpsfd = open(filepath, O_RDONLY);
+      if(!gpsfd)
+      {
+        perror("ERROR: opening input file");
+        exit(1);
+      }
+      /* set blocking mode in case it was not set (seems to be sometimes for fifo's) */
+      fcntl(gpsfd, F_SETFL, 0);
+      printf("file input: file = %s\n", filepath);
+    }
+    break;
+  case SERIAL:                 /* open serial port */
+    {
+      gpsfd = openserial(ttyin, 1, ttybaud);
+      if(gpsfd < 0)
+      {
+        exit(1);
+      }
+      printf("serial input: device = %s, speed = %d\n", ttyin, ttybaud);
+    }
+    break;
+  case TCPSOCKET:
+    {
+      in_addr.sin_family = AF_INET;
+      in_addr.sin_port = htons(in_port);
+
+      if((gpsfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+      {
+        fprintf(stderr, "ERROR: can't create socket\n");
+        exit(1);
+      }
+
+      printf("socket input: host = %s, port = %d\n",
+        inet_ntoa(in_addr.sin_addr), in_port);
+
+      if(connect(gpsfd, (struct sockaddr *) &in_addr, sizeof(in_addr)) < 0)
+      {
+        fprintf(stderr, "ERROR: can't connect input to %s at port %d\n",
+          inet_ntoa(in_addr.sin_addr), in_port);
+        exit(1);
+      }
+    }
+    break;
+  default:
+    usage(-1);
+    break;
+  }
+
+  out_addr.sin_family = AF_INET;
+  out_addr.sin_port = htons((u_short) (out_port));
+
+  /* ----- main part ----- */
+  while(1)
+  {
+    /* create socket */
+    if((sock_id = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+      fprintf(stderr, "ERROR : could not create socket\n");
+      exit(2);
+    }
+    /* connect to caster */
+    fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s\n",
+      inet_ntoa(out_addr.sin_addr), out_port, mountpoint);
+    if(connect(sock_id, (struct sockaddr *) &out_addr, sizeof(out_addr)) < 0)
+    {
+      fprintf(stderr, "ERROR: can't connect output to %s at port %d\n",
+        inet_ntoa(out_addr.sin_addr), out_port);
+      close(sock_id);
+      exit(3);
+    }
+
+    /* set socket buffer size */
+    setsockopt(sock_id, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
+      sizeof(const char *));
+    /* send message to caster */
+    szSendBuffer[0] = '\0';
+    sprintf(szSendBuffer, "SOURCE %s /%s\r\n", password, mountpoint);
+    strcat(szSendBuffer, "Source-Agent: ");
+    strcat(szSendBuffer, VERSION);
+    strcat(szSendBuffer, "\r\n");
+    strcat(szSendBuffer, "\r\n");
+    strcat(szSendBuffer, "\0");
+    nBufferBytes = strlen(szSendBuffer);
+    if((send(sock_id, szSendBuffer, nBufferBytes, 0)) != nBufferBytes)
+    {
+      fprintf(stderr, "ERROR: could not send to caster\n");
+      close(sock_id);
+      sleep(5);
+      exit(0);
+    }
+    /* check caster's response */
+    nBufferBytes = recv(sock_id, szSendBuffer, sizeof(szSendBuffer), 0);
+    szSendBuffer[nBufferBytes] = '\0';
+    if(strcmp(szSendBuffer, "OK\r\n"))
+    {
+      char *a;
+      fprintf(stderr, "ERROR: caster's reply is not OK : ");
+      for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
+      {
+        fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
+      }
+      fprintf(stderr, "\n");
+      close(sock_id);
+      sleep(5);
+      exit(0);
+    }
+    printf("connection succesfull\n");
+    send_receive_loop(sock_id, gpsfd);
+  }
   exit(0);
 }
 
-int send_receive_loop(int socket, int fd)
+void send_receive_loop(int socket, int fd)
 {
-  char buffer[BUFSZ]={0};
-  int nBufferBytes=0;
-  //data transmission
+  char buffer[BUFSZ] = { 0 };
+  int nBufferBytes = 0, i;
+  /* data transmission */
   printf("transfering data ...\n");
   while(1)
+  {
+    if(!nBufferBytes)
     {
-      // recieving data
+      /* receiving data */
       nBufferBytes = read(fd, buffer, BUFSZ);
-      if (nBufferBytes<=0)
-        {
-          /* TODO Errorhandling/Debugging - Output */
-          printf("ERROR : no data recieved from serial port or socket\n");
-        }
-      // send data
-      if((send(socket, buffer, nBufferBytes, MSG_DONTWAIT)) != nBufferBytes)
-        {                                       //MSG_DONTWAIT  : send works in non-blocking mode
-          /* TODO Errorhandling/Debugging - Output */
-          fprintf(stderr,"ERROR : could not send data\n");		
-          close(socket);
-          sleep(5);
-          exit(4);
-        }
+      if(!nBufferBytes)
+      {
+        printf("WARNING: no data received from input\n");
+        continue;
+      }
+      else if(nBufferBytes < 0)
+      {
+        perror("ERROR: reading input failed");
+        exit(1);
+      }
     }
+    /* send data */
+    if((i = send(socket, buffer, nBufferBytes, MSG_DONTWAIT)) != nBufferBytes)
+    {
+      if(i < 0 && errno != EAGAIN)
+      {
+        perror("WARNING: could not send data - retry connection");
+        close(socket);
+        sleep(5);
+        return;
+      }
+      else if(i)
+      {
+        memmove(buffer, buffer+i, nBufferBytes-i);
+        nBufferBytes -= i;
+      }
+    }
+    else
+    {
+      nBufferBytes = 0;
+    }
+  }
 }
 
 /*
@@ -449,108 +454,103 @@ int send_receive_loop(int socket, int fd)
  *
  */
 
-int openserial (u_char * tty, int blocksz, int ttybaud)
+int openserial(u_char * tty, int blocksz, int ttybaud)
 {
-  int             fd;
-  struct termios  termios;
-  
-  fd = open(tty, O_RDWR | O_NONBLOCK
-#ifdef O_EXLOCK        		/* for Linux */
-            | O_EXLOCK
-#endif
-            );
-  if (fd < 0) {
-    perror("open");
+  int fd;
+  struct termios termios;
+
+  fd = open(tty, O_RDWR | O_NONBLOCK | O_EXLOCK);
+  if(fd < 0)
+  {
+    perror("ERROR: opening serial connection");
     return (-1);
   }
-  if (tcgetattr(fd, &termios) < 0) {
-    
-    perror("tcgetattr");
+  if(tcgetattr(fd, &termios) < 0)
+  {
+    perror("ERROR: get serial attributes");
     return (-1);
   }
   termios.c_iflag = 0;
-  termios.c_oflag = 0;        /* (ONLRET) */
+  termios.c_oflag = 0;          /* (ONLRET) */
   termios.c_cflag = CS8 | CLOCAL | CREAD;
   termios.c_lflag = 0;
   {
-    int   cnt;
-    for (cnt = 0; cnt < NCCS; cnt++)
+    int cnt;
+    for(cnt = 0; cnt < NCCS; cnt++)
       termios.c_cc[cnt] = -1;
   }
   termios.c_cc[VMIN] = blocksz;
   termios.c_cc[VTIME] = 2;
-  
+
 #if (B4800 != 4800)
   /*
    * Not every system has speed settings equal to absolute speed value.
    */
-  
+
   switch (ttybaud)
-    {
-    case 300:
-      ttybaud = B300;
-      break;
-    case 1200:
-      ttybaud = B1200;
-      break;
-    case 2400:
-      ttybaud = B2400;
-      break;
-    case 4800:
-      ttybaud = B4800;
-      break;
-    case 9600:
-      ttybaud = B9600;
-      break;
-    case 19200:
-      ttybaud = B19200;
-      break;
-    case 38400:
-      ttybaud = B38400;
-      break;
+  {
+  case 300:
+    ttybaud = B300;
+    break;
+  case 1200:
+    ttybaud = B1200;
+    break;
+  case 2400:
+    ttybaud = B2400;
+    break;
+  case 4800:
+    ttybaud = B4800;
+    break;
+  case 9600:
+    ttybaud = B9600;
+    break;
+  case 19200:
+    ttybaud = B19200;
+    break;
+  case 38400:
+    ttybaud = B38400;
+    break;
 #ifdef B57600
-    case 57600:
-      ttybaud = B57600;
-      break;
+  case 57600:
+    ttybaud = B57600;
+    break;
 #endif
 #ifdef B115200
-    case 115200:
-      ttybaud = B115200;
-      break;
+  case 115200:
+    ttybaud = B115200;
+    break;
 #endif
 #ifdef B230400
-    case 230400:
-      ttybaud = B230400;
-      break;
+  case 230400:
+    ttybaud = B230400;
+    break;
 #endif
-    default:
-      fprintf(stderr, "Baud settings not useful, using 19200\n");
-      ttybaud = B19200;
-      break;
-    }
+  default:
+    fprintf(stderr, "WARNING: Baud settings not useful, using 19200\n");
+    ttybaud = B19200;
+    break;
+  }
 #endif
-  
-  if (cfsetispeed(&termios, ttybaud) != 0)
-    {
-      perror("cfsetispeed");
-      return (-1);
-    }
-  if (cfsetospeed(&termios, ttybaud) != 0)
-    {
-      perror("cfsetospeed");
-      return (-1);
-    }
-  if (tcsetattr(fd, TCSANOW, &termios) < 0)
-    {
-      perror("tcsetattr");
-      return (-1);
-    }
-#if 1        			/* WANT_BLOCKING_READ */
-  if (fcntl(fd, F_SETFL, 0) == -1)
-    {
-      perror("fcntl: set nonblock");
-    }
-#endif
+
+  if(cfsetispeed(&termios, ttybaud) != 0)
+  {
+    perror("ERROR: setting serial speed with cfsetispeed");
+    return (-1);
+  }
+  if(cfsetospeed(&termios, ttybaud) != 0)
+  {
+    perror("ERROR: setting serial speed with cfsetospeed");
+    return (-1);
+  }
+  if(tcsetattr(fd, TCSANOW, &termios) < 0)
+  {
+    perror("ERROR: setting serial attributes");
+    return (-1);
+  }
+  if(fcntl(fd, F_SETFL, 0) == -1)
+  {
+    perror("WARNING: setting blocking mode failed");
+  }
   return (fd);
 }
 
@@ -569,30 +569,30 @@ int openserial (u_char * tty, int blocksz, int ttybaud)
  *
  */
 
-void usage (int rc)
+void usage(int rc)
 {
-  fprintf (stderr, "%s: application\n",VERSION);
-  fprintf (stderr, "Usage: %s [OPTIONS]\n",VERSION);
-  fprintf (stderr, "  Options are:\n");
-  fprintf (stderr, "    -a caster name or address (default: %s)\n", NTRIP_CASTER);
-  fprintf (stderr, "    -p caster port (default: %d)\n", NTRIP_PORT);
-  fprintf (stderr, "    -m caster mountpoint\n");
-  fprintf (stderr, "    -c password for caster login\n");
-  fprintf (stderr, "    -h|? print this help screen\n");
-  fprintf (stderr, "    -M <mode>  sets the mode\n");
-  fprintf (stderr, "               (1=serial, 2=tcpsocket, 3=simulate)\n");
-  fprintf (stderr, "  Mode = simulate:\n");
-  fprintf (stderr, "    -s file, simulate data stream by reading log file\n");
-  fprintf (stderr, "       default/current setting is %s\n",  (simulate ? "enabled" : "disabled"));
-  fprintf (stderr, "  Mode = serial:\n");
-  fprintf (stderr, "    -b baud_rate, sets serial input baud rate\n");
-  fprintf (stderr, "       default/current value is %d\n", ttybaud);
-  fprintf (stderr, "    -i input_device, sets name of serial input device\n");
-  fprintf (stderr, "       default/current value is %s\n", ttyport);
-  fprintf (stderr, "       (normally a symbolic link to /dev/tty\?\?)\n");
-  fprintf (stderr, "  Mode = tcpsocket:\n");
-  fprintf (stderr, "    -P receiver port (default: 1025)\n");
-  fprintf (stderr, "    -H hostname of TCP server (default: 127.0.0.1)\n");
-  fprintf (stderr, "    \n");
-  exit (rc);
+  fprintf(stderr, "Usage: %s [OPTIONS]\n", VERSION);
+  fprintf(stderr, "  Options are:\n");
+  fprintf(stderr, "    -a caster name or address (default: %s)\n",
+    NTRIP_CASTER);
+  fprintf(stderr, "    -p caster port (default: %d)\n", NTRIP_PORT);
+  fprintf(stderr, "    -m caster mountpoint\n");
+  fprintf(stderr, "    -c password for caster login\n");
+  fprintf(stderr, "    -h|? print this help screen\n");
+  fprintf(stderr, "    -M <mode>  sets the mode\n");
+  fprintf(stderr, "               (1=serial, 2=tcpsocket, 3=file)\n");
+  fprintf(stderr, "  Mode = file:\n");
+  fprintf(stderr, "    -s file, simulate data stream by reading log file\n");
+  fprintf(stderr, "       default/current setting is %s\n", filepath);
+  fprintf(stderr, "  Mode = serial:\n");
+  fprintf(stderr, "    -b baud_rate, sets serial input baud rate\n");
+  fprintf(stderr, "       default/current value is %d\n", ttybaud);
+  fprintf(stderr, "    -i input_device, sets name of serial input device\n");
+  fprintf(stderr, "       default/current value is %s\n", ttyport);
+  fprintf(stderr, "       (normally a symbolic link to /dev/tty\?\?)\n");
+  fprintf(stderr, "  Mode = tcpsocket:\n");
+  fprintf(stderr, "    -P receiver port (default: 1025)\n");
+  fprintf(stderr, "    -H hostname of TCP server (default: 127.0.0.1)\n");
+  fprintf(stderr, "    \n");
+  exit(rc);
 }
