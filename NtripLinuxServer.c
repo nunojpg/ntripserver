@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.8 2005/03/21 13:02:47 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.9 2005/04/19 11:28:17 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -133,6 +133,7 @@ int main(int argc, char **argv)
   unsigned int in_port = 0;
   char *mountpoint = NULL;
   char *password = "";
+  char *initfile = NULL;
   int sock_id;
   char szSendBuffer[BUFSZ];
   int nBufferBytes;
@@ -159,12 +160,15 @@ int main(int argc, char **argv)
     usage(2);
     exit(1);
   }
-  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:")) != EOF)
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:")) != EOF)
   {
     switch (c)
     {
     case 'M':
-      mode = atoi(optarg);
+      if(!strcmp(optarg, "serial")) mode = 1;
+      else if(!strcmp(optarg, "tcpsocket")) mode = 2;
+      else if(!strcmp(optarg, "file")) mode = 3;
+      else mode = atoi(optarg);
       if((mode == 0) || (mode > 3))
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
@@ -204,8 +208,11 @@ int main(int argc, char **argv)
     case 'm':                  /* http server mountpoint */
       mountpoint = optarg;
       break;
-    case 'f':                  /* datastream from file */
+    case 's':                  /* datastream from file */
       filepath = optarg;
+      break;
+    case 'f':
+      initfile = optarg;
       break;
     case 'c':                  /* password */
       password = optarg;
@@ -308,14 +315,44 @@ int main(int argc, char **argv)
         exit(1);
       }
 
-      printf("socket input: host = %s, port = %d\n",
-        inet_ntoa(in_addr.sin_addr), in_port);
+      printf("socket input: host = %s, port = %d%s%s\n",
+        inet_ntoa(in_addr.sin_addr), in_port, initfile ? ", initfile = " : "",
+        initfile ? initfile : "");
 
       if(connect(gpsfd, (struct sockaddr *) &in_addr, sizeof(in_addr)) < 0)
       {
         fprintf(stderr, "ERROR: can't connect input to %s at port %d\n",
           inet_ntoa(in_addr.sin_addr), in_port);
         exit(1);
+      }
+      if(initfile)
+      {
+        char buffer[1024];
+        FILE *fh;
+        int i;
+
+        if((fh = fopen(initfile, "r")))
+        {
+          while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
+          {
+            if((send(gpsfd, buffer, i, 0)) != i)
+            {
+              perror("ERROR: sending init file");
+              exit(1);
+            }
+          }
+          if(i < 0)
+          {
+            perror("ERROR: reading init file");
+            exit(1);
+          }
+          fclose(fh);
+        }
+        else
+        {
+          fprintf(stderr, "ERROR: can't read init file %s\n", initfile);
+          exit(1);
+        }
       }
     }
     break;
@@ -593,6 +630,7 @@ void usage(int rc)
   fprintf(stderr, "  Mode = tcpsocket:\n");
   fprintf(stderr, "    -P receiver port (default: 1025)\n");
   fprintf(stderr, "    -H hostname of TCP server (default: 127.0.0.1)\n");
+  fprintf(stderr, "    -f initfile send to server\n");
   fprintf(stderr, "    \n");
   exit(rc);
 }
