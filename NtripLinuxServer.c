@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.9 2005/04/19 11:28:17 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.10 2005/04/27 08:32:43 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -95,15 +95,15 @@ enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3 };
 #define NTRIP_CASTER    "www.euref-ip.net"
 #define NTRIP_PORT      80
 
-int ttybaud             = 19200;
-char *ttyport           = "/dev/gps";
-char *filepath          = "/dev/stdin";
-enum MODE mode          = INFILE;
+static int ttybaud             = 19200;
+static const char *ttyport     = "/dev/gps";
+static const char *filepath    = "/dev/stdin";
+static enum MODE mode          = INFILE;
 
 /* Forward references */
-int openserial(u_char * tty, int blocksz, int ttybaud);
-void send_receive_loop(int socket, int fd);
-void usage(int);
+static int openserial(const char * tty, int blocksz, int baud);
+static void send_receive_loop(int sock, int fd);
+static void usage(int);
 
 /*
 * main
@@ -125,15 +125,14 @@ void usage(int);
 
 int main(int argc, char **argv)
 {
-  u_char *ttyin = ttyport;
   int c, gpsfd = -1;
   int size = 2048;              /* for setting send buffer size */
 
   unsigned int out_port = 0;
   unsigned int in_port = 0;
-  char *mountpoint = NULL;
-  char *password = "";
-  char *initfile = NULL;
+  const char *mountpoint = NULL;
+  const char *password = "";
+  const char *initfile = NULL;
   int sock_id;
   char szSendBuffer[BUFSZ];
   int nBufferBytes;
@@ -151,7 +150,7 @@ int main(int argc, char **argv)
   else
   {
     memset((char *) &out_addr, 0x00, sizeof(out_addr));
-    memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
+    memcpy(&out_addr.sin_addr, outhost->h_addr, (size_t)outhost->h_length);
   }
 
   /* get and check program arguments */
@@ -175,8 +174,8 @@ int main(int argc, char **argv)
         usage(-1);
       }
       break;
-    case 'i':                  /* gps serial ttyin */
-      ttyin = optarg;
+    case 'i':                  /* gps serial ttyport */
+      ttyport = optarg;
       break;
     case 'b':                  /* serial ttyin speed */
       ttybaud = atoi(optarg);
@@ -194,7 +193,7 @@ int main(int argc, char **argv)
         usage(-2);
       }
       memset((char *) &out_addr, 0x00, sizeof(out_addr));
-      memcpy(&out_addr.sin_addr, outhost->h_addr, outhost->h_length);
+      memcpy(&out_addr.sin_addr, outhost->h_addr, (size_t)outhost->h_length);
       break;
     case 'p':                  /* http server port */
       out_port = atoi(optarg);
@@ -225,7 +224,7 @@ int main(int argc, char **argv)
         usage(-2);
       }
       memset((char *) &in_addr, 0x00, sizeof(in_addr));
-      memcpy(&in_addr.sin_addr, inhost->h_addr, inhost->h_length);
+      memcpy(&in_addr.sin_addr, inhost->h_addr, (size_t)inhost->h_length);
       break;
     case 'P':                  /* port */
       in_port = atoi(optarg);
@@ -296,12 +295,12 @@ int main(int argc, char **argv)
     break;
   case SERIAL:                 /* open serial port */
     {
-      gpsfd = openserial(ttyin, 1, ttybaud);
+      gpsfd = openserial(ttyport, 1, ttybaud);
       if(gpsfd < 0)
       {
         exit(1);
       }
-      printf("serial input: device = %s, speed = %d\n", ttyin, ttybaud);
+      printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
     }
     break;
   case TCPSOCKET:
@@ -335,7 +334,7 @@ int main(int argc, char **argv)
         {
           while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
           {
-            if((send(gpsfd, buffer, i, 0)) != i)
+            if((send(gpsfd, buffer, (size_t)i, 0)) != i)
             {
               perror("ERROR: sending init file");
               exit(1);
@@ -396,7 +395,7 @@ int main(int argc, char **argv)
     strcat(szSendBuffer, "\r\n");
     strcat(szSendBuffer, "\0");
     nBufferBytes = strlen(szSendBuffer);
-    if((send(sock_id, szSendBuffer, nBufferBytes, 0)) != nBufferBytes)
+    if((send(sock_id, szSendBuffer, (size_t)nBufferBytes, 0)) != nBufferBytes)
     {
       fprintf(stderr, "ERROR: could not send to caster\n");
       close(sock_id);
@@ -425,7 +424,7 @@ int main(int argc, char **argv)
   exit(0);
 }
 
-void send_receive_loop(int socket, int fd)
+static void send_receive_loop(int sock, int fd)
 {
   char buffer[BUFSZ] = { 0 };
   int nBufferBytes = 0, i;
@@ -449,18 +448,19 @@ void send_receive_loop(int socket, int fd)
       }
     }
     /* send data */
-    if((i = send(socket, buffer, nBufferBytes, MSG_DONTWAIT)) != nBufferBytes)
+    if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
+    != nBufferBytes)
     {
       if(i < 0 && errno != EAGAIN)
       {
         perror("WARNING: could not send data - retry connection");
-        close(socket);
+        close(sock);
         sleep(5);
         return;
       }
       else if(i)
       {
-        memmove(buffer, buffer+i, nBufferBytes-i);
+        memmove(buffer, buffer+i, (size_t)(nBufferBytes-i));
         nBufferBytes -= i;
       }
     }
@@ -481,7 +481,7 @@ void send_receive_loop(int socket, int fd)
  *     tty     : pointer to    : A zero-terminated string containing the device
  *               unsigned char   name of the appropriate serial port.
  *     blocksz : integer       : Block size for port I/O
- *     ttybaud : integer       : Baud rate for port I/O
+ *     baud :    integer       : Baud rate for port I/O
  *
  * Return Value:
  *     The function returns a file descriptor for the opened port if successful.
@@ -491,7 +491,7 @@ void send_receive_loop(int socket, int fd)
  *
  */
 
-int openserial(u_char * tty, int blocksz, int ttybaud)
+static int openserial(const char * tty, int blocksz, int baud)
 {
   int fd;
   struct termios termios;
@@ -524,57 +524,57 @@ int openserial(u_char * tty, int blocksz, int ttybaud)
    * Not every system has speed settings equal to absolute speed value.
    */
 
-  switch (ttybaud)
+  switch (baud)
   {
   case 300:
-    ttybaud = B300;
+    baud = B300;
     break;
   case 1200:
-    ttybaud = B1200;
+    baud = B1200;
     break;
   case 2400:
-    ttybaud = B2400;
+    baud = B2400;
     break;
   case 4800:
-    ttybaud = B4800;
+    baud = B4800;
     break;
   case 9600:
-    ttybaud = B9600;
+    baud = B9600;
     break;
   case 19200:
-    ttybaud = B19200;
+    baud = B19200;
     break;
   case 38400:
-    ttybaud = B38400;
+    baud = B38400;
     break;
 #ifdef B57600
   case 57600:
-    ttybaud = B57600;
+    baud = B57600;
     break;
 #endif
 #ifdef B115200
   case 115200:
-    ttybaud = B115200;
+    baud = B115200;
     break;
 #endif
 #ifdef B230400
   case 230400:
-    ttybaud = B230400;
+    baud = B230400;
     break;
 #endif
   default:
     fprintf(stderr, "WARNING: Baud settings not useful, using 19200\n");
-    ttybaud = B19200;
+    baud = B19200;
     break;
   }
 #endif
 
-  if(cfsetispeed(&termios, ttybaud) != 0)
+  if(cfsetispeed(&termios, baud) != 0)
   {
     perror("ERROR: setting serial speed with cfsetispeed");
     return (-1);
   }
-  if(cfsetospeed(&termios, ttybaud) != 0)
+  if(cfsetospeed(&termios, baud) != 0)
   {
     perror("ERROR: setting serial speed with cfsetospeed");
     return (-1);
@@ -606,7 +606,7 @@ int openserial(u_char * tty, int blocksz, int ttybaud)
  *
  */
 
-void usage(int rc)
+static void usage(int rc)
 {
   fprintf(stderr, "Usage: %s [OPTIONS]\n", VERSION);
   fprintf(stderr, "  Options are:\n");
