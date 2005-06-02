@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.10 2005/04/27 08:32:43 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.11 2005/04/27 10:31:12 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -58,6 +58,13 @@
  *           - replaced non-working simulate with file input (stdin)
  *           - TCP sending now somewhat more stable
  *           - cleanup of error handling
+ *
+ * Changes - Version 0.11
+ * Jun 02 2005  Dirk Stoecker <soft@dstoecker.de>
+ *           - added SISNeT support
+ *           - added UDP support
+ *           - cleanup of host and port handling
+ *           - added inactivity alarm of 60 seconds
  */
 
 #include <ctype.h>
@@ -65,6 +72,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,9 +90,9 @@
 #define O_EXLOCK 0 /* prevent compiler errors */
 #endif
 
-enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3 };
+enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5 };
 
-#define VERSION         "NTRIP NtripServerLinux/0.10"
+#define VERSION         "NTRIP NtripServerLinux/0.11"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -95,15 +103,29 @@ enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3 };
 #define NTRIP_CASTER    "www.euref-ip.net"
 #define NTRIP_PORT      80
 
+/* default sisnet source */
+#define SISNET_SERVER   "131.176.49.142"
+#define SISNET_PORT     7777
+
+#define ALARMTIME       60
+
 static int ttybaud             = 19200;
 static const char *ttyport     = "/dev/gps";
 static const char *filepath    = "/dev/stdin";
 static enum MODE mode          = INFILE;
+static int sisnetv3            = 0;
+static int gpsfd               = -1;
 
 /* Forward references */
 static int openserial(const char * tty, int blocksz, int baud);
-static void send_receive_loop(int sock, int fd);
+static void send_receive_loop(int sock, int fd, int sisnet);
 static void usage(int);
+
+static void sighandler_alarm(/*int arg*/)
+{
+  fprintf(stderr, "ERROR: more than %d seconds no activity\n", ALARMTIME);
+  exit(1);
+}
 
 /*
 * main
@@ -125,41 +147,33 @@ static void usage(int);
 
 int main(int argc, char **argv)
 {
-  int c, gpsfd = -1;
+  int c;
   int size = 2048;              /* for setting send buffer size */
 
-  unsigned int out_port = 0;
-  unsigned int in_port = 0;
+  const char *inhost = 0;
+  const char *outhost = 0;
+  unsigned int outport = 0;
+  unsigned int inport = 0;
   const char *mountpoint = NULL;
   const char *password = "";
+  const char *sisnetpassword = "";
+  const char *sisnetuser = "";
   const char *initfile = NULL;
   int sock_id;
   char szSendBuffer[BUFSZ];
   int nBufferBytes;
+  struct hostent *he;
+  struct sockaddr_in addr;
 
-  struct hostent *inhost;
-  struct hostent *outhost;
-
-  struct sockaddr_in in_addr;
-  struct sockaddr_in out_addr;
-
-  if(!(outhost = gethostbyname(NTRIP_CASTER)))
-  {
-    fprintf(stderr, "WARNING: host %s unknown\n", NTRIP_CASTER);
-  }
-  else
-  {
-    memset((char *) &out_addr, 0x00, sizeof(out_addr));
-    memcpy(&out_addr.sin_addr, outhost->h_addr, (size_t)outhost->h_length);
-  }
-
+  signal(SIGALRM,sighandler_alarm);
+  alarm(ALARMTIME);
   /* get and check program arguments */
   if(argc <= 1)
   {
     usage(2);
     exit(1);
   }
-  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:")) != EOF)
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:")) != EOF)
   {
     switch (c)
     {
@@ -167,8 +181,10 @@ int main(int argc, char **argv)
       if(!strcmp(optarg, "serial")) mode = 1;
       else if(!strcmp(optarg, "tcpsocket")) mode = 2;
       else if(!strcmp(optarg, "file")) mode = 3;
+      else if(!strcmp(optarg, "sisnet")) mode = 4;
+      else if(!strcmp(optarg, "udpsocket")) mode = 5;
       else mode = atoi(optarg);
-      if((mode == 0) || (mode > 3))
+      if((mode == 0) || (mode > 5))
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
         usage(-1);
@@ -177,6 +193,13 @@ int main(int argc, char **argv)
     case 'i':                  /* gps serial ttyport */
       ttyport = optarg;
       break;
+    case 'V':
+      if(!strcmp("3.0", optarg)) sisnetv3 = 1;
+      else if(strcmp("2.1", optarg))
+      {
+        fprintf(stderr, "ERROR: unknown SISNeT version %s\n", optarg);
+        usage(-2);
+      }
     case 'b':                  /* serial ttyin speed */
       ttybaud = atoi(optarg);
       if(ttybaud <= 1)
@@ -186,18 +209,11 @@ int main(int argc, char **argv)
       }
       break;
     case 'a':                  /* http server IP address A.B.C.D */
-      outhost = gethostbyname(optarg);
-      if(outhost == NULL)
-      {
-        fprintf(stderr, "ERROR: host %s unknown\n", optarg);
-        usage(-2);
-      }
-      memset((char *) &out_addr, 0x00, sizeof(out_addr));
-      memcpy(&out_addr.sin_addr, outhost->h_addr, (size_t)outhost->h_length);
+      outhost = optarg;
       break;
     case 'p':                  /* http server port */
-      out_port = atoi(optarg);
-      if(out_port <= 1)
+      outport = atoi(optarg);
+      if(outport <= 1 || outport > 65535)
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid HTTP server port\n",
           optarg);
@@ -213,24 +229,23 @@ int main(int argc, char **argv)
     case 'f':
       initfile = optarg;
       break;
+    case 'u':
+      sisnetuser = optarg;
+      break;
+    case 'l':
+      sisnetpassword = optarg;
+      break;
     case 'c':                  /* password */
       password = optarg;
       break;
     case 'H':                  /* host */
-      inhost = gethostbyname(optarg);
-      if(inhost == NULL)
-      {
-        fprintf(stderr, "ERROR: host %s unknown\n", optarg);
-        usage(-2);
-      }
-      memset((char *) &in_addr, 0x00, sizeof(in_addr));
-      memcpy(&in_addr.sin_addr, inhost->h_addr, (size_t)inhost->h_length);
+      inhost = optarg;
       break;
     case 'P':                  /* port */
-      in_port = atoi(optarg);
-      if(in_port <= 1)
+      inport = atoi(optarg);
+      if(inport <= 1 || inport > 65535)
       {
-        fprintf(stderr, "ERROR: can't convert %s to a valid receiver port\n",
+        fprintf(stderr, "ERROR: can't convert %s to a valid port number\n",
           optarg);
         usage(1);
       }
@@ -242,15 +257,6 @@ int main(int argc, char **argv)
     default:
       usage(2);
       break;
-    }
-
-    if(in_port <= 0)
-    {
-      in_port = SERV_TCP_PORT;
-    }
-    if(out_port <= 0)
-    {
-      out_port = NTRIP_PORT;
     }
   }
 
@@ -278,7 +284,10 @@ int main(int argc, char **argv)
     fprintf(stderr, "WARNING: Missing password argument - are you really sure?\n");
   }
 
-  switch (mode)
+  if(!outhost) outhost = NTRIP_CASTER;
+  if(!outport) outport = NTRIP_PORT;
+
+  switch(mode)
   {
   case INFILE:
     {
@@ -303,28 +312,48 @@ int main(int argc, char **argv)
       printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
     }
     break;
-  case TCPSOCKET:
+  case TCPSOCKET: case UDPSOCKET: case SISNET:
     {
-      in_addr.sin_family = AF_INET;
-      in_addr.sin_port = htons(in_port);
+      if(mode == SISNET)
+      {
+        if(!inhost) inhost = SISNET_SERVER;
+        if(!inport) inport = SISNET_PORT;
+      }
+      else
+      {
+        if(!inport) inport = SERV_TCP_PORT;
+        if(!inhost) inhost = "127.0.0.1";
+      }
 
-      if((gpsfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+      if(!(he = gethostbyname(inhost)))
+      {
+        fprintf(stderr, "ERROR: host %s unknown\n", inhost);
+        usage(-2);
+      }
+
+      if((gpsfd = socket(AF_INET, mode == UDPSOCKET ? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
       {
         fprintf(stderr, "ERROR: can't create socket\n");
         exit(1);
       }
 
-      printf("socket input: host = %s, port = %d%s%s\n",
-        inet_ntoa(in_addr.sin_addr), in_port, initfile ? ", initfile = " : "",
+      memset((char *) &addr, 0x00, sizeof(addr));
+      memcpy(&addr.sin_addr, he->h_addr, (size_t)he->h_length);
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(inport);
+
+      printf("%s input: host = %s, port = %d%s%s\n", mode == SISNET ? "sisnet"
+        : "socket",
+        inet_ntoa(addr.sin_addr), inport, initfile ? ", initfile = " : "",
         initfile ? initfile : "");
 
-      if(connect(gpsfd, (struct sockaddr *) &in_addr, sizeof(in_addr)) < 0)
+      if(connect(gpsfd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
       {
         fprintf(stderr, "ERROR: can't connect input to %s at port %d\n",
-          inet_ntoa(in_addr.sin_addr), in_port);
+          inet_ntoa(addr.sin_addr), inport);
         exit(1);
       }
-      if(initfile)
+      if(initfile && mode != SISNET)
       {
         char buffer[1024];
         FILE *fh;
@@ -354,31 +383,67 @@ int main(int argc, char **argv)
         }
       }
     }
+    if(mode == SISNET)
+    {
+      int i, j;
+      char buffer[1024];
+
+      i = snprintf(buffer, sizeof(buffer), sisnetv3 ? "AUTH,%s,%s\r\n" : "AUTH,%s,%s",
+      sisnetuser,sisnetpassword);
+      if((send(gpsfd, buffer, (size_t)i, 0)) != i)
+      {
+        perror("ERROR: sending authentication");
+        exit(1);
+      }
+      i = sisnetv3 ? 7 : 5;
+      if((j = recv(gpsfd, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
+      {
+        fprintf(stderr, "ERROR: SISNeT connect failed:");
+        for(i = 0; i < j; ++i)
+        {
+          if(buffer[i] != '\r' && buffer[i] != '\n')
+          {
+            fprintf(stderr, "%c", isprint(buffer[i]) ? buffer[i] : '.');
+          }
+        }
+        fprintf(stderr, "\n");
+        exit(1);
+      }
+    }
     break;
   default:
     usage(-1);
     break;
   }
 
-  out_addr.sin_family = AF_INET;
-  out_addr.sin_port = htons((u_short) (out_port));
-
   /* ----- main part ----- */
   while(1)
   {
+    if(!(he = gethostbyname(outhost)))
+    {
+      fprintf(stderr, "ERROR: host %s unknown\n", outhost);
+      usage(-2);
+    }
+
     /* create socket */
     if((sock_id = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
-      fprintf(stderr, "ERROR : could not create socket\n");
+      fprintf(stderr, "ERROR: could not create socket\n");
       exit(2);
     }
+
+    memset((char *) &addr, 0x00, sizeof(addr));
+    memcpy(&addr.sin_addr, he->h_addr, (size_t)he->h_length);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(outport);
+
     /* connect to caster */
     fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s\n",
-      inet_ntoa(out_addr.sin_addr), out_port, mountpoint);
-    if(connect(sock_id, (struct sockaddr *) &out_addr, sizeof(out_addr)) < 0)
+      inet_ntoa(addr.sin_addr), outport, mountpoint);
+    if(connect(sock_id, (struct sockaddr *) &addr, sizeof(addr)) < 0)
     {
       fprintf(stderr, "ERROR: can't connect output to %s at port %d\n",
-        inet_ntoa(out_addr.sin_addr), out_port);
+        inet_ntoa(addr.sin_addr), outport);
       close(sock_id);
       exit(3);
     }
@@ -419,21 +484,39 @@ int main(int argc, char **argv)
       exit(0);
     }
     printf("connection succesfull\n");
-    send_receive_loop(sock_id, gpsfd);
+    send_receive_loop(sock_id, gpsfd, mode == SISNET);
   }
   exit(0);
 }
 
-static void send_receive_loop(int sock, int fd)
+static void send_receive_loop(int sock, int fd, int sisnet)
 {
   char buffer[BUFSZ] = { 0 };
+  char sisnetbackbuffer[200];
   int nBufferBytes = 0, i;
   /* data transmission */
   printf("transfering data ...\n");
   while(1)
   {
+    alarm(ALARMTIME);
+
     if(!nBufferBytes)
     {
+      if(sisnet)
+      {
+        int i;
+        /* a somewhat higher rate than 1 second to get really each block */
+        /* means we need to skip double blocks sometimes */
+        struct timeval tv = {0,700000};
+        select(0, 0, 0, 0, &tv);
+        memcpy(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer));
+        i = (sisnetv3 ? 5 : 3);
+        if((send(gpsfd, "MSG\r\n", i, 0)) != i)
+        {
+          perror("ERROR: sending data request");
+          exit(1);
+        }
+      }
       /* receiving data */
       nBufferBytes = read(fd, buffer, BUFSZ);
       if(!nBufferBytes)
@@ -446,27 +529,35 @@ static void send_receive_loop(int sock, int fd)
         perror("ERROR: reading input failed");
         exit(1);
       }
-    }
-    /* send data */
-    if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
-    != nBufferBytes)
-    {
-      if(i < 0 && errno != EAGAIN)
+      /* we can compare the whole buffer, as the additional bytes remain unchanged */
+      if(!memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
       {
-        perror("WARNING: could not send data - retry connection");
-        close(sock);
-        sleep(5);
-        return;
-      }
-      else if(i)
-      {
-        memmove(buffer, buffer+i, (size_t)(nBufferBytes-i));
-        nBufferBytes -= i;
+        nBufferBytes = 0;
       }
     }
-    else
+    if(nBufferBytes)
     {
-      nBufferBytes = 0;
+      /* send data */
+      if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
+      != nBufferBytes)
+      {
+        if(i < 0 && errno != EAGAIN)
+        {
+          perror("WARNING: could not send data - retry connection");
+          close(sock);
+          sleep(5);
+          return;
+        }
+        else if(i)
+        {
+          memmove(buffer, buffer+i, (size_t)(nBufferBytes-i));
+          nBufferBytes -= i;
+        }
+      }
+      else
+      {
+        nBufferBytes = 0;
+      }
     }
   }
 }
@@ -617,7 +708,7 @@ static void usage(int rc)
   fprintf(stderr, "    -c password for caster login\n");
   fprintf(stderr, "    -h|? print this help screen\n");
   fprintf(stderr, "    -M <mode>  sets the mode\n");
-  fprintf(stderr, "               (1=serial, 2=tcpsocket, 3=file)\n");
+  fprintf(stderr, "               (1=serial, 2=tcpsocket, 3=file, 4=sisnet, 5=udpsocket)\n");
   fprintf(stderr, "  Mode = file:\n");
   fprintf(stderr, "    -s file, simulate data stream by reading log file\n");
   fprintf(stderr, "       default/current setting is %s\n", filepath);
@@ -627,10 +718,16 @@ static void usage(int rc)
   fprintf(stderr, "    -i input_device, sets name of serial input device\n");
   fprintf(stderr, "       default/current value is %s\n", ttyport);
   fprintf(stderr, "       (normally a symbolic link to /dev/tty\?\?)\n");
-  fprintf(stderr, "  Mode = tcpsocket:\n");
-  fprintf(stderr, "    -P receiver port (default: 1025)\n");
-  fprintf(stderr, "    -H hostname of TCP server (default: 127.0.0.1)\n");
+  fprintf(stderr, "  Mode = tcpsocket or udpsocket:\n");
+  fprintf(stderr, "    -P receiver port (default: %d)\n", SERV_TCP_PORT);
+  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SERV_HOST_ADDR);
   fprintf(stderr, "    -f initfile send to server\n");
-  fprintf(stderr, "    \n");
+  fprintf(stderr, "  Mode = sisnet:\n");
+  fprintf(stderr, "    -P receiver port (default: %d)\n", SISNET_PORT);
+  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SISNET_SERVER);
+  fprintf(stderr, "    -u username\n");
+  fprintf(stderr, "    -l password\n");
+  fprintf(stderr, "    -V version [2.1 or 3.0] (default: 2.1)\n");
+  fprintf(stderr, "\n");
   exit(rc);
 }
