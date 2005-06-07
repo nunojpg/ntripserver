@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.11 2005/04/27 10:31:12 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.12 2005/06/02 09:33:11 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -58,6 +58,7 @@
  *           - replaced non-working simulate with file input (stdin)
  *           - TCP sending now somewhat more stable
  *           - cleanup of error handling
+ *           - Modes may be symbolic and not only numeric
  *
  * Changes - Version 0.11
  * Jun 02 2005  Dirk Stoecker <soft@dstoecker.de>
@@ -65,6 +66,10 @@
  *           - added UDP support
  *           - cleanup of host and port handling
  *           - added inactivity alarm of 60 seconds
+ *
+ * Changes - Version 0.12
+ * Jun 07 2005  Dirk Stoecker <soft@dstoecker.de>
+ *           - added UDP bindmode
  */
 
 #include <ctype.h>
@@ -92,7 +97,7 @@
 
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5 };
 
-#define VERSION         "NTRIP NtripServerLinux/0.11"
+#define VERSION         "NTRIP NtripServerLinux/0.12"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -159,6 +164,7 @@ int main(int argc, char **argv)
   const char *sisnetpassword = "";
   const char *sisnetuser = "";
   const char *initfile = NULL;
+  int bindmode = 0;
   int sock_id;
   char szSendBuffer[BUFSZ];
   int nBufferBytes;
@@ -173,7 +179,7 @@ int main(int argc, char **argv)
     usage(2);
     exit(1);
   }
-  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:")) != EOF)
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:B")) != EOF)
   {
     switch (c)
     {
@@ -192,6 +198,9 @@ int main(int argc, char **argv)
       break;
     case 'i':                  /* gps serial ttyport */
       ttyport = optarg;
+      break;
+    case 'B':
+      bindmode = 1;
       break;
     case 'V':
       if(!strcmp("3.0", optarg)) sisnetv3 = 1;
@@ -338,16 +347,26 @@ int main(int argc, char **argv)
       }
 
       memset((char *) &addr, 0x00, sizeof(addr));
-      memcpy(&addr.sin_addr, he->h_addr, (size_t)he->h_length);
+      if(!bindmode)
+        memcpy(&addr.sin_addr, he->h_addr, (size_t)he->h_length);
       addr.sin_family = AF_INET;
       addr.sin_port = htons(inport);
 
-      printf("%s input: host = %s, port = %d%s%s\n", mode == SISNET ? "sisnet"
-        : "socket",
-        inet_ntoa(addr.sin_addr), inport, initfile ? ", initfile = " : "",
-        initfile ? initfile : "");
+      printf("%s input: host = %s, port = %d%s%s%s\n", mode == SISNET ? "sisnet"
+        : mode == TCPSOCKET ? "tcp socket" : "udp socket",
+        bindmode ? "127.0.0.1" : inet_ntoa(addr.sin_addr), inport,
+        initfile ? ", initfile = " : "",
+        initfile ? initfile : "", bindmode ? " binding mode" : "");
 
-      if(connect(gpsfd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
+      if(bindmode)
+      {
+        if(bind(gpsfd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
+        {
+          fprintf(stderr, "ERROR: can't bind input to port %d\n", inport);
+          exit(1);
+        }
+      }
+      else if(connect(gpsfd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
       {
         fprintf(stderr, "ERROR: can't connect input to %s at port %d\n",
           inet_ntoa(addr.sin_addr), inport);
@@ -483,7 +502,7 @@ int main(int argc, char **argv)
       sleep(5);
       exit(0);
     }
-    printf("connection succesfull\n");
+    printf("connection successfull\n");
     send_receive_loop(sock_id, gpsfd, mode == SISNET);
   }
   exit(0);
@@ -722,6 +741,7 @@ static void usage(int rc)
   fprintf(stderr, "    -P receiver port (default: %d)\n", SERV_TCP_PORT);
   fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SERV_HOST_ADDR);
   fprintf(stderr, "    -f initfile send to server\n");
+  fprintf(stderr, "    -B bindmode (bind to incoming UDP stream)\n");
   fprintf(stderr, "  Mode = sisnet:\n");
   fprintf(stderr, "    -P receiver port (default: %d)\n", SISNET_PORT);
   fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SISNET_SERVER);
