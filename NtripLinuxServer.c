@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.12 2005/06/02 09:33:11 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.13 2005/06/07 14:47:52 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -126,7 +126,12 @@ static int openserial(const char * tty, int blocksz, int baud);
 static void send_receive_loop(int sock, int fd, int sisnet);
 static void usage(int);
 
-static void sighandler_alarm(/*int arg*/)
+#ifdef __GNUC__
+static __attribute__ ((noreturn)) void sighandler_alarm(
+int sig __attribute__((__unused__)))
+#else /* __GNUC__ */
+static void sighandler_alarm(int sig)
+#endif /* __GNUC__ */
 {
   fprintf(stderr, "ERROR: more than %d seconds no activity\n", ALARMTIME);
   exit(1);
@@ -512,7 +517,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
 {
   char buffer[BUFSZ] = { 0 };
   char sisnetbackbuffer[200];
-  int nBufferBytes = 0, i;
+  int nBufferBytes = 0;
   /* data transmission */
   printf("transfering data ...\n");
   while(1)
@@ -556,6 +561,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
     }
     if(nBufferBytes)
     {
+      int i;
       /* send data */
       if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
       != nBufferBytes)
@@ -716,7 +722,11 @@ static int openserial(const char * tty, int blocksz, int baud)
  *
  */
 
-static void usage(int rc)
+static
+#ifdef __GNUC__
+__attribute__ ((noreturn))
+#endif /* __GNUC__ */
+void usage(int rc)
 {
   fprintf(stderr, "Usage: %s [OPTIONS]\n", VERSION);
   fprintf(stderr, "  Options are:\n");
