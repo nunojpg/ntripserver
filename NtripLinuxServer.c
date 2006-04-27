@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.13 2005/06/07 14:47:52 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.12 2005/06/02 09:33:11 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -70,6 +70,15 @@
  * Changes - Version 0.12
  * Jun 07 2005  Dirk Stoecker <soft@dstoecker.de>
  *           - added UDP bindmode
+ *
+ * Changes - Version 0.13
+ * Apr 25 2006  Andrea Stuerze <andrea.stuerze@bkg.bund.de>
+ *           - added stream retrieval from caster
+ *
+ * Changes - Version 0.14
+ * Apr 27 2006  Dirk Stoecker <soft@dstoecker.de>
+ *           - fixed some problems with caster download
+ *
  */
 
 #include <ctype.h>
@@ -95,9 +104,10 @@
 #define O_EXLOCK 0 /* prevent compiler errors */
 #endif
 
-enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5 };
+enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
+CASTER = 6};
 
-#define VERSION         "NTRIP NtripServerLinux/0.12"
+#define VERSION         "NTRIP NtripServerLinux/0.13"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -125,6 +135,7 @@ static int gpsfd               = -1;
 static int openserial(const char * tty, int blocksz, int baud);
 static void send_receive_loop(int sock, int fd, int sisnet);
 static void usage(int);
+static int encode(char *buf, int size, const char *user, const char *pwd);
 
 #ifdef __GNUC__
 static __attribute__ ((noreturn)) void sighandler_alarm(
@@ -145,8 +156,8 @@ static void sighandler_alarm(int sig)
 *
 * Parameters:
 *     argc : integer        : Number of command-line arguments.
-*     argv : array of char  : Command-line arguments as an array of zero-terminated
-*                             pointers to strings.
+*     argv : array of char  : Command-line arguments as an array of
+*                             zero-terminated pointers to strings.
 *
 * Return Value:
 *     The function does not return a value (although its return type is int).
@@ -168,6 +179,11 @@ int main(int argc, char **argv)
   const char *password = "";
   const char *sisnetpassword = "";
   const char *sisnetuser = "";
+  
+  const char *stream_name=0;
+  const char *stream_user=0;
+  const char *stream_password=0;
+  
   const char *initfile = NULL;
   int bindmode = 0;
   int sock_id;
@@ -184,7 +200,8 @@ int main(int argc, char **argv)
     usage(2);
     exit(1);
   }
-  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:B")) != EOF)
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:D:U:W:B"))
+  != EOF)
   {
     switch (c)
     {
@@ -194,8 +211,9 @@ int main(int argc, char **argv)
       else if(!strcmp(optarg, "file")) mode = 3;
       else if(!strcmp(optarg, "sisnet")) mode = 4;
       else if(!strcmp(optarg, "udpsocket")) mode = 5;
+      else if(!strcmp(optarg, "caster")) mode = 6;
       else mode = atoi(optarg);
-      if((mode == 0) || (mode > 5))
+      if((mode == 0) || (mode > 6))
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
         usage(-1);
@@ -218,7 +236,8 @@ int main(int argc, char **argv)
       ttybaud = atoi(optarg);
       if(ttybaud <= 1)
       {
-        fprintf(stderr, "ERROR: can't convert %s to valid serial speed\n", optarg);
+        fprintf(stderr, "ERROR: can't convert %s to valid serial speed\n",
+          optarg);
         usage(1);
       }
       break;
@@ -229,8 +248,8 @@ int main(int argc, char **argv)
       outport = atoi(optarg);
       if(outport <= 1 || outport > 65535)
       {
-        fprintf(stderr, "ERROR: can't convert %s to a valid HTTP server port\n",
-          optarg);
+        fprintf(stderr,
+          "ERROR: can't convert %s to a valid HTTP server port\n", optarg);
         usage(1);
       }
       break;
@@ -264,6 +283,15 @@ int main(int argc, char **argv)
         usage(1);
       }
       break;
+    case 'D':
+     stream_name=optarg;        /* desired stream from SourceCaster */
+     break; 
+    case 'U':
+     stream_user=optarg;        /* username for desired stream */
+     break;
+    case 'W':
+     stream_password=optarg;    /* passwd for desired stream */
+     break;
     case 'h':                  /* help */
     case '?':
       usage(0);
@@ -295,7 +323,14 @@ int main(int argc, char **argv)
   }
   if(!password[0])
   {
-    fprintf(stderr, "WARNING: Missing password argument - are you really sure?\n");
+    fprintf(stderr,
+      "WARNING: Missing password argument - are you really sure?\n");
+  }
+
+  if(stream_name && (!stream_user || stream_password))
+  {
+    fprintf(stderr, "WARNING: Missing password argument for download"
+      " - are you really sure?\n");
   }
 
   if(!outhost) outhost = NTRIP_CASTER;
@@ -311,7 +346,8 @@ int main(int argc, char **argv)
         perror("ERROR: opening input file");
         exit(1);
       }
-      /* set blocking mode in case it was not set (seems to be sometimes for fifo's) */
+      /* set blocking mode in case it was not set
+        (seems to be sometimes for fifo's) */
       fcntl(gpsfd, F_SETFL, 0);
       printf("file input: file = %s\n", filepath);
     }
@@ -326,18 +362,23 @@ int main(int argc, char **argv)
       printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
     }
     break;
-  case TCPSOCKET: case UDPSOCKET: case SISNET:
+  case TCPSOCKET: case UDPSOCKET: case SISNET: case CASTER:
     {
       if(mode == SISNET)
       {
         if(!inhost) inhost = SISNET_SERVER;
         if(!inport) inport = SISNET_PORT;
       }
-      else
+      else if(mode == CASTER)
+      {
+        if(!inport) inport = NTRIP_PORT;
+        if(!inhost) inhost = NTRIP_CASTER;
+      }
+      else if((mode == TCPSOCKET) || (mode == UDPSOCKET))
       {
         if(!inport) inport = SERV_TCP_PORT;
         if(!inhost) inhost = "127.0.0.1";
-      }
+      }      
 
       if(!(he = gethostbyname(inhost)))
       {
@@ -345,7 +386,8 @@ int main(int argc, char **argv)
         usage(-2);
       }
 
-      if((gpsfd = socket(AF_INET, mode == UDPSOCKET ? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
+      if((gpsfd = socket(AF_INET, mode == UDPSOCKET
+      ? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
       {
         fprintf(stderr, "ERROR: can't create socket\n");
         exit(1);
@@ -357,11 +399,13 @@ int main(int argc, char **argv)
       addr.sin_family = AF_INET;
       addr.sin_port = htons(inport);
 
-      printf("%s input: host = %s, port = %d%s%s%s\n", mode == SISNET ? "sisnet"
-        : mode == TCPSOCKET ? "tcp socket" : "udp socket",
-        bindmode ? "127.0.0.1" : inet_ntoa(addr.sin_addr), inport,
-        initfile ? ", initfile = " : "",
-        initfile ? initfile : "", bindmode ? " binding mode" : "");
+      printf("%s input: host = %s, port = %d, %s%s%s%s%s\n",
+      mode == CASTER ? "caster" : mode == SISNET ? "sisnet" :
+      mode == TCPSOCKET ? "tcp socket" : "udp socket",
+      bindmode ? "127.0.0.1" : inet_ntoa(addr.sin_addr),
+      inport, stream_name ? "stream = " : "", stream_name ? stream_name : "",
+      initfile ? ", initfile = " : "", initfile ? initfile : "",
+      bindmode ? " binding mode" : "");
 
       if(bindmode)
       {
@@ -377,6 +421,82 @@ int main(int argc, char **argv)
           inet_ntoa(addr.sin_addr), inport);
         exit(1);
       }
+            
+      if(stream_name) /* data stream from caster */
+      {
+        int init = 0;
+
+        /* set socket buffer size */
+        setsockopt(gpsfd, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
+          sizeof(const char *));
+        if(stream_user && stream_password)
+        {
+          /* leave some space for login */
+          nBufferBytes=snprintf(szSendBuffer, sizeof(szSendBuffer)-40,
+          "GET /%s HTTP/1.0\r\n"
+          "User-Agent: %s\r\n"
+          "Authorization: Basic ", stream_name, VERSION);
+          /* second check for old glibc */
+          if(nBufferBytes > (int)sizeof(szSendBuffer)-40 || nBufferBytes < 0)
+          {
+            fprintf(stderr, "Requested data too long\n");
+            exit(1);
+          }
+          nBufferBytes += encode(szSendBuffer+nBufferBytes,
+            sizeof(szSendBuffer)-nBufferBytes-5, stream_user, stream_password);
+          if(nBufferBytes > (int)sizeof(szSendBuffer)-5)
+          {
+            fprintf(stderr, "Username and/or password too long\n");
+            exit(1);
+          }
+          snprintf(szSendBuffer+nBufferBytes, 5, "\r\n\r\n");
+          nBufferBytes += 5;
+        }
+        else
+        {
+          nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+          "GET /%s HTTP/1.0\r\n"
+          "User-Agent: %s\r\n"
+          "\r\n", stream_name, VERSION);
+        }
+        if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
+        != nBufferBytes)
+        {
+          fprintf(stderr, "ERROR: could not send to caster\n");
+          exit(1);
+        }
+        nBufferBytes = 0;
+        /* check caster's response */ 
+        while(!init && nBufferBytes < (int)sizeof(szSendBuffer)
+        && (nBufferBytes += recv(gpsfd, szSendBuffer,
+        sizeof(szSendBuffer)-nBufferBytes, 0)) > 0)
+        {
+          if(strstr(szSendBuffer, "\r\n"))
+          {
+            if(!strncmp(szSendBuffer, "ICY 200 OK\r\n", 10))
+              init = 1;
+            else
+            {
+              int k;
+              fprintf(stderr, "Could not get the requested data: ");
+              for(k = 0; k < nBufferBytes && szSendBuffer[k] != '\n'
+              && szSendBuffer[k] != '\r'; ++k)
+              {
+                fprintf(stderr, "%c", isprint(szSendBuffer[k])
+                ? szSendBuffer[k] : '.');
+              }
+              fprintf(stderr, "\n");
+              exit(1);
+            }
+          }
+        }
+        if(!init)
+        {
+          fprintf(stderr, "Could not init caster download.");
+          exit(1);
+        }
+      } /* end data stream from caster */
+
       if(initfile && mode != SISNET)
       {
         char buffer[1024];
@@ -412,8 +532,8 @@ int main(int argc, char **argv)
       int i, j;
       char buffer[1024];
 
-      i = snprintf(buffer, sizeof(buffer), sisnetv3 ? "AUTH,%s,%s\r\n" : "AUTH,%s,%s",
-      sisnetuser,sisnetpassword);
+      i = snprintf(buffer, sizeof(buffer), sisnetv3 ? "AUTH,%s,%s\r\n"
+        : "AUTH,%s,%s", sisnetuser, sisnetpassword);
       if((send(gpsfd, buffer, (size_t)i, 0)) != i)
       {
         perror("ERROR: sending authentication");
@@ -542,7 +662,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
         }
       }
       /* receiving data */
-      nBufferBytes = read(fd, buffer, BUFSZ);
+      nBufferBytes = read(fd, buffer, sizeof(buffer));
       if(!nBufferBytes)
       {
         printf("WARNING: no data received from input\n");
@@ -553,8 +673,9 @@ static void send_receive_loop(int sock, int fd, int sisnet)
         perror("ERROR: reading input failed");
         exit(1);
       }
-      /* we can compare the whole buffer, as the additional bytes remain unchanged */
-      if(!memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
+      /* we can compare the whole buffer, as the additional bytes
+         remain unchanged */
+      if(sisnet && !memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
       {
         nBufferBytes = 0;
       }
@@ -564,7 +685,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
       int i;
       /* send data */
       if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
-      != nBufferBytes)
+        != nBufferBytes)
       {
         if(i < 0 && errno != EAGAIN)
         {
@@ -729,15 +850,16 @@ __attribute__ ((noreturn))
 void usage(int rc)
 {
   fprintf(stderr, "Usage: %s [OPTIONS]\n", VERSION);
-  fprintf(stderr, "  Options are:\n");
-  fprintf(stderr, "    -a caster name or address (default: %s)\n",
+  fprintf(stderr, "  Options are: [-]           \n");
+  fprintf(stderr, "    -a DestinationCaster name or address (default: %s)\n",
     NTRIP_CASTER);
-  fprintf(stderr, "    -p caster port (default: %d)\n", NTRIP_PORT);
-  fprintf(stderr, "    -m caster mountpoint\n");
-  fprintf(stderr, "    -c password for caster login\n");
+  fprintf(stderr, "    -p DestinationCaster port (default: %d)\n", NTRIP_PORT);
+  fprintf(stderr, "    -m DestinationCaster mountpoint\n");
+  fprintf(stderr, "    -c DestinationCaster password\n");
   fprintf(stderr, "    -h|? print this help screen\n");
-  fprintf(stderr, "    -M <mode>  sets the mode\n");
-  fprintf(stderr, "               (1=serial, 2=tcpsocket, 3=file, 4=sisnet, 5=udpsocket)\n");
+  fprintf(stderr, "    -M <mode>  sets the input mode\n");
+  fprintf(stderr, "               (1=serial, 2=tcpsocket, 3=file, 4=sisnet"
+    ", 5=udpsocket, 6=caster)\n");
   fprintf(stderr, "  Mode = file:\n");
   fprintf(stderr, "    -s file, simulate data stream by reading log file\n");
   fprintf(stderr, "       default/current setting is %s\n", filepath);
@@ -749,15 +871,73 @@ void usage(int rc)
   fprintf(stderr, "       (normally a symbolic link to /dev/tty\?\?)\n");
   fprintf(stderr, "  Mode = tcpsocket or udpsocket:\n");
   fprintf(stderr, "    -P receiver port (default: %d)\n", SERV_TCP_PORT);
-  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SERV_HOST_ADDR);
+  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n",
+    SERV_HOST_ADDR);
   fprintf(stderr, "    -f initfile send to server\n");
-  fprintf(stderr, "    -B bindmode (bind to incoming UDP stream)\n");
+  fprintf(stderr, "    -B bindmode: bind to incoming UDP stream\n");
   fprintf(stderr, "  Mode = sisnet:\n");
   fprintf(stderr, "    -P receiver port (default: %d)\n", SISNET_PORT);
-  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n", SISNET_SERVER);
+  fprintf(stderr, "    -H hostname of TCP server (default: %s)\n",
+    SISNET_SERVER);
   fprintf(stderr, "    -u username\n");
   fprintf(stderr, "    -l password\n");
   fprintf(stderr, "    -V version [2.1 or 3.0] (default: 2.1)\n");
+  fprintf(stderr, "  Mode = caster:\n");
+  fprintf(stderr, "    -P SourceCaster port (default: %d)\n", NTRIP_PORT);
+  fprintf(stderr, "    -H SourceCaster hostname (default: %s)\n",
+    NTRIP_CASTER);
+  fprintf(stderr, "    -D SourceCaster mountpoint\n");
+  fprintf(stderr, "    -U SourceCaster mountpoint username\n");
+  fprintf(stderr, "    -W SourceCaster mountpoint password\n");  
   fprintf(stderr, "\n");
   exit(rc);
+}
+
+static const char encodingTable [64] = {
+  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P',
+  'Q','R','S','T','U','V','W','X','Y','Z','a','b','c','d','e','f',
+  'g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v',
+  'w','x','y','z','0','1','2','3','4','5','6','7','8','9','+','/'
+};
+
+/* does not buffer overrun, but breaks directly after an error */
+/* returns the number of required bytes */
+static int encode(char *buf, int size, const char *user, const char *pwd)
+{
+  unsigned char inbuf[3];
+  char *out = buf;
+  int i, sep = 0, fill = 0, bytes = 0;
+
+  while(*user || *pwd)
+  {
+    i = 0;
+    while(i < 3 && *user) inbuf[i++] = *(user++);
+    if(i < 3 && !sep)    {inbuf[i++] = ':'; ++sep; }
+    while(i < 3 && *pwd)  inbuf[i++] = *(pwd++);
+    while(i < 3)         {inbuf[i++] = 0; ++fill; }
+    if(out-buf < size-1)
+      *(out++) = encodingTable[(inbuf [0] & 0xFC) >> 2];
+    if(out-buf < size-1)
+      *(out++) = encodingTable[((inbuf [0] & 0x03) << 4)
+               | ((inbuf [1] & 0xF0) >> 4)];
+    if(out-buf < size-1)
+    {
+      if(fill == 2)
+        *(out++) = '=';
+      else
+        *(out++) = encodingTable[((inbuf [1] & 0x0F) << 2)
+                 | ((inbuf [2] & 0xC0) >> 6)];
+    }
+    if(out-buf < size-1)
+    {
+      if(fill >= 1)
+        *(out++) = '=';
+      else
+        *(out++) = encodingTable[inbuf [2] & 0x3F];
+    }
+    bytes += 4;
+  }
+  if(out-buf < size)
+    *out = 0;
+  return bytes;
 }
