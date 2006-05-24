@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.12 2005/06/02 09:33:11 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.15 2006/04/27 09:44:27 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -687,12 +687,15 @@ static void send_receive_loop(int sock, int fd, int sisnet)
       if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
         != nBufferBytes)
       {
-        if(i < 0 && errno != EAGAIN)
+        if(i < 0)
         {
-          perror("WARNING: could not send data - retry connection");
-          close(sock);
-          sleep(5);
-          return;
+          if(errno != EAGAIN)
+          {
+            perror("WARNING: could not send data - retry connection");
+            close(sock);
+            sleep(5);
+            return;
+          }
         }
         else if(i)
         {
