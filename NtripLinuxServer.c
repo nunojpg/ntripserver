@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.16 2006/05/24 10:12:52 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.17 2006/07/27 09:54:39 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -699,7 +699,8 @@ static void send_receive_loop(int sock, int fd)
       }
       /* we can compare the whole buffer, as the additional bytes
          remain unchanged */
-      if(mode == SISNET && !memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
+      if(mode == SISNET && sisnet <= 30 &&
+      !memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
       {
         nBufferBytes = 0;
       }
