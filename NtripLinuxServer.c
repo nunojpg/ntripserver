@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.17 2006/07/27 09:54:39 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.18 2006/07/27 10:07:28 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -343,7 +343,7 @@ int main(int argc, char **argv)
       "WARNING: Missing password argument - are you really sure?\n");
   }
 
-  if(stream_name && (!stream_user || stream_password))
+  if(stream_name && stream_user && !stream_password)
   {
     fprintf(stderr, "WARNING: Missing password argument for download"
       " - are you really sure?\n");
