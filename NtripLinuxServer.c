@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.15 2006/04/27 09:44:27 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.16 2006/05/24 10:12:52 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -76,8 +76,21 @@
  *           - added stream retrieval from caster
  *
  * Changes - Version 0.14
- * Apr 27 2006  Dirk Stoecker <soft@dstoecker.de>
+ * May 16 2006  Andrea Stuerze <andrea.stuerze@bkg.bund.de>
+ *           - bug fix in base64_encode-function
+ *
+ * Changes - Version 0.15
+ * Jun 02 2006  Georg Weber <georg.weber@bkg.bund.de>
+ *           - modification for SISNeT 3.1 protocol
+ *
+ * Changes - Version 0.16
+ * Jul 06 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
+ *           - more flexible caster's response
+ *
+ * Changes - Version 0.17
+ * Jul 27 2006  Dirk Stoecker <soft@dstoecker.de>
  *           - fixed some problems with caster download
+ *           - some minor cosmetic changes
  *
  */
 
@@ -107,7 +120,7 @@
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
 CASTER = 6};
 
-#define VERSION         "NTRIP NtripServerLinux/0.13"
+#define VERSION         "NTRIP NtripServerLinux/0.17"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -128,12 +141,12 @@ static int ttybaud             = 19200;
 static const char *ttyport     = "/dev/gps";
 static const char *filepath    = "/dev/stdin";
 static enum MODE mode          = INFILE;
-static int sisnetv3            = 0;
+static int sisnet              = 31;
 static int gpsfd               = -1;
 
 /* Forward references */
 static int openserial(const char * tty, int blocksz, int baud);
-static void send_receive_loop(int sock, int fd, int sisnet);
+static void send_receive_loop(int sock, int fd);
 static void usage(int);
 static int encode(char *buf, int size, const char *user, const char *pwd);
 
@@ -226,12 +239,15 @@ int main(int argc, char **argv)
       bindmode = 1;
       break;
     case 'V':
-      if(!strcmp("3.0", optarg)) sisnetv3 = 1;
-      else if(strcmp("2.1", optarg))
+      if(!strcmp("3.0", optarg)) sisnet = 30;
+      else if(!strcmp("3.1", optarg)) sisnet = 31;
+      else if(!strcmp("2.1", optarg)) sisnet = 20;
+      else
       {
         fprintf(stderr, "ERROR: unknown SISNeT version %s\n", optarg);
         usage(-2);
       }
+      break;
     case 'b':                  /* serial ttyin speed */
       ttybaud = atoi(optarg);
       if(ttybaud <= 1)
@@ -340,8 +356,7 @@ int main(int argc, char **argv)
   {
   case INFILE:
     {
-      gpsfd = open(filepath, O_RDONLY);
-      if(!gpsfd)
+      if((gpsfd = open(filepath, O_RDONLY)) < 0)
       {
         perror("ERROR: opening input file");
         exit(1);
@@ -405,7 +420,7 @@ int main(int argc, char **argv)
       bindmode ? "127.0.0.1" : inet_ntoa(addr.sin_addr),
       inport, stream_name ? "stream = " : "", stream_name ? stream_name : "",
       initfile ? ", initfile = " : "", initfile ? initfile : "",
-      bindmode ? " binding mode" : "");
+      bindmode ? "binding mode" : "");
 
       if(bindmode)
       {
@@ -532,14 +547,14 @@ int main(int argc, char **argv)
       int i, j;
       char buffer[1024];
 
-      i = snprintf(buffer, sizeof(buffer), sisnetv3 ? "AUTH,%s,%s\r\n"
+      i = snprintf(buffer, sizeof(buffer), sisnet >= 30 ? "AUTH,%s,%s\r\n"
         : "AUTH,%s,%s", sisnetuser, sisnetpassword);
       if((send(gpsfd, buffer, (size_t)i, 0)) != i)
       {
         perror("ERROR: sending authentication");
         exit(1);
       }
-      i = sisnetv3 ? 7 : 5;
+      i = sisnet >= 30 ? 7 : 5;
       if((j = recv(gpsfd, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
       {
         fprintf(stderr, "ERROR: SISNeT connect failed:");
@@ -552,6 +567,14 @@ int main(int argc, char **argv)
         }
         fprintf(stderr, "\n");
         exit(1);
+      }
+      if(sisnet >= 31)
+      {
+        if((send(gpsfd, "START\r\n", 7, 0)) != i)
+        {
+          perror("ERROR: sending start command");
+          exit(1);
+        }
       }
     }
     break;
@@ -614,7 +637,7 @@ int main(int argc, char **argv)
     /* check caster's response */
     nBufferBytes = recv(sock_id, szSendBuffer, sizeof(szSendBuffer), 0);
     szSendBuffer[nBufferBytes] = '\0';
-    if(strcmp(szSendBuffer, "OK\r\n"))
+    if(!strstr(szSendBuffer, "OK"))
     {
       char *a;
       fprintf(stderr, "ERROR: caster's reply is not OK : ");
@@ -628,12 +651,12 @@ int main(int argc, char **argv)
       exit(0);
     }
     printf("connection successfull\n");
-    send_receive_loop(sock_id, gpsfd, mode == SISNET);
+    send_receive_loop(sock_id, gpsfd);
   }
   exit(0);
 }
 
-static void send_receive_loop(int sock, int fd, int sisnet)
+static void send_receive_loop(int sock, int fd)
 {
   char buffer[BUFSZ] = { 0 };
   char sisnetbackbuffer[200];
@@ -646,7 +669,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
 
     if(!nBufferBytes)
     {
-      if(sisnet)
+      if(mode == SISNET && sisnet <= 30)
       {
         int i;
         /* a somewhat higher rate than 1 second to get really each block */
@@ -654,7 +677,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
         struct timeval tv = {0,700000};
         select(0, 0, 0, 0, &tv);
         memcpy(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer));
-        i = (sisnetv3 ? 5 : 3);
+        i = (sisnet >= 30 ? 5 : 3);
         if((send(gpsfd, "MSG\r\n", i, 0)) != i)
         {
           perror("ERROR: sending data request");
@@ -666,6 +689,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
       if(!nBufferBytes)
       {
         printf("WARNING: no data received from input\n");
+	sleep(3);
         continue;
       }
       else if(nBufferBytes < 0)
@@ -675,7 +699,7 @@ static void send_receive_loop(int sock, int fd, int sisnet)
       }
       /* we can compare the whole buffer, as the additional bytes
          remain unchanged */
-      if(sisnet && !memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
+      if(mode == SISNET && !memcmp(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer)))
       {
         nBufferBytes = 0;
       }
@@ -884,7 +908,7 @@ void usage(int rc)
     SISNET_SERVER);
   fprintf(stderr, "    -u username\n");
   fprintf(stderr, "    -l password\n");
-  fprintf(stderr, "    -V version [2.1 or 3.0] (default: 2.1)\n");
+  fprintf(stderr, "    -V version [2.1, 3.0 or 3.1] (default: 3.1)\n");
   fprintf(stderr, "  Mode = caster:\n");
   fprintf(stderr, "    -P SourceCaster port (default: %d)\n", NTRIP_PORT);
   fprintf(stderr, "    -H SourceCaster hostname (default: %s)\n",
