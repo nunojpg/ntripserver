@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.18 2006/07/27 10:07:28 stoecker Exp $
+/* $Id$
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -241,7 +241,7 @@ int main(int argc, char **argv)
     case 'V':
       if(!strcmp("3.0", optarg)) sisnet = 30;
       else if(!strcmp("3.1", optarg)) sisnet = 31;
-      else if(!strcmp("2.1", optarg)) sisnet = 20;
+      else if(!strcmp("2.1", optarg)) sisnet = 21;
       else
       {
         fprintf(stderr, "ERROR: unknown SISNeT version %s\n", optarg);
