@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id$
+/* $Id: NtripLinuxServer.c,v 1.20 2006/07/27 14:07:15 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -118,7 +118,7 @@
 #endif
 
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
-CASTER = 6};
+CASTER = 6, LAST};
 
 #define VERSION         "NTRIP NtripServerLinux/0.17"
 #define BUFSZ           1024
@@ -219,14 +219,14 @@ int main(int argc, char **argv)
     switch (c)
     {
     case 'M':
-      if(!strcmp(optarg, "serial")) mode = 1;
-      else if(!strcmp(optarg, "tcpsocket")) mode = 2;
-      else if(!strcmp(optarg, "file")) mode = 3;
-      else if(!strcmp(optarg, "sisnet")) mode = 4;
-      else if(!strcmp(optarg, "udpsocket")) mode = 5;
-      else if(!strcmp(optarg, "caster")) mode = 6;
+      if(!strcmp(optarg, "serial")) mode = SERIAL;
+      else if(!strcmp(optarg, "tcpsocket")) mode = TCPSOCKET;
+      else if(!strcmp(optarg, "file")) mode = INFILE;
+      else if(!strcmp(optarg, "sisnet")) mode = SISNET;
+      else if(!strcmp(optarg, "udpsocket")) mode = UDPSOCKET;
+      else if(!strcmp(optarg, "caster")) mode = CASTER;
       else mode = atoi(optarg);
-      if((mode == 0) || (mode > 6))
+      if((mode == 0) || (mode >= LAST))
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
         usage(-1);
