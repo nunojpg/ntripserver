@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.20 2006/07/27 14:07:15 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.21 2006/08/03 15:10:33 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -584,7 +584,7 @@ int main(int argc, char **argv)
   }
 
   /* ----- main part ----- */
-  while(1)
+  for(;;)
   {
     if(!(he = gethostbyname(outhost)))
     {
@@ -630,9 +630,7 @@ int main(int argc, char **argv)
     if((send(sock_id, szSendBuffer, (size_t)nBufferBytes, 0)) != nBufferBytes)
     {
       fprintf(stderr, "ERROR: could not send to caster\n");
-      close(sock_id);
-      sleep(5);
-      exit(0);
+      break;
     }
     /* check caster's response */
     nBufferBytes = recv(sock_id, szSendBuffer, sizeof(szSendBuffer), 0);
@@ -646,14 +644,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
       }
       fprintf(stderr, "\n");
-      close(sock_id);
-      sleep(5);
-      exit(0);
+      break;
     }
     printf("connection successfull\n");
     send_receive_loop(sock_id, gpsfd);
   }
-  exit(0);
+  close(sock_id);
+  sleep(5);
+  return 0;
 }
 
 static void send_receive_loop(int sock, int fd)
