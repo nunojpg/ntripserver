@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.21 2006/08/03 15:10:33 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.22 2006/08/03 15:36:57 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -656,6 +656,7 @@ int main(int argc, char **argv)
 
 static void send_receive_loop(int sock, int fd)
 {
+  int nodata = 0;
   char buffer[BUFSZ] = { 0 };
   char sisnetbackbuffer[200];
   int nBufferBytes = 0;
@@ -663,7 +664,8 @@ static void send_receive_loop(int sock, int fd)
   printf("transfering data ...\n");
   while(1)
   {
-    alarm(ALARMTIME);
+    if(!nodata) alarm(ALARMTIME);
+    else nodata = 0;
 
     if(!nBufferBytes)
     {
@@ -688,6 +690,7 @@ static void send_receive_loop(int sock, int fd)
       {
         printf("WARNING: no data received from input\n");
 	sleep(3);
+        nodata = 1;
         continue;
       }
       else if(nBufferBytes < 0)
