@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.22 2006/08/03 15:36:57 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.23 2006/08/16 08:33:04 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -92,6 +92,10 @@
  *           - fixed some problems with caster download
  *           - some minor cosmetic changes
  *
+ * Changes - Version 0.18
+ * Nov 23 2006  Dirk Stoecker <soft@dstoecker.de>
+ *           - default port changed from 80 to 2101
+ *
  */
 
 #include <ctype.h>
@@ -124,12 +128,12 @@ CASTER = 6, LAST};
 #define BUFSZ           1024
 
 /* default socket source */
-#define SERV_HOST_ADDR  "127.0.0.1"
-#define SERV_TCP_PORT   1025
+#define SERV_HOST_ADDR  "localhost"
+#define SERV_TCP_PORT   2101
 
 /* default destination */
 #define NTRIP_CASTER    "www.euref-ip.net"
-#define NTRIP_PORT      80
+#define NTRIP_PORT     2101
 
 /* default sisnet source */
 #define SISNET_SERVER   "131.176.49.142"
