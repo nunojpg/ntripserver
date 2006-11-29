@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.23 2006/08/16 08:33:04 stoecker Exp $
+/* $Id: NtripLinuxServer.c,v 1.24 2006/11/23 14:39:50 stoecker Exp $
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -462,14 +462,16 @@ int main(int argc, char **argv)
             exit(1);
           }
           nBufferBytes += encode(szSendBuffer+nBufferBytes,
-            sizeof(szSendBuffer)-nBufferBytes-5, stream_user, stream_password);
-          if(nBufferBytes > (int)sizeof(szSendBuffer)-5)
+            sizeof(szSendBuffer)-nBufferBytes-4, stream_user, stream_password);
+          if(nBufferBytes > (int)sizeof(szSendBuffer)-4)
           {
             fprintf(stderr, "Username and/or password too long\n");
             exit(1);
           }
-          snprintf(szSendBuffer+nBufferBytes, 5, "\r\n\r\n");
-          nBufferBytes += 5;
+          szSendBuffer[nBufferBytes++] = '\r';
+          szSendBuffer[nBufferBytes++] = '\n';
+          szSendBuffer[nBufferBytes++] = '\r';
+          szSendBuffer[nBufferBytes++] = '\n';
         }
         else
         {
@@ -623,14 +625,8 @@ int main(int argc, char **argv)
     setsockopt(sock_id, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
       sizeof(const char *));
     /* send message to caster */
-    szSendBuffer[0] = '\0';
-    sprintf(szSendBuffer, "SOURCE %s /%s\r\n", password, mountpoint);
-    strcat(szSendBuffer, "Source-Agent: ");
-    strcat(szSendBuffer, VERSION);
-    strcat(szSendBuffer, "\r\n");
-    strcat(szSendBuffer, "\r\n");
-    strcat(szSendBuffer, "\0");
-    nBufferBytes = strlen(szSendBuffer);
+    nBufferBytes = sprintf(szSendBuffer, "SOURCE %s /%s\r\nSource-Agent: "
+    VERSION "\r\n\r\n", password, mountpoint);
     if((send(sock_id, szSendBuffer, (size_t)nBufferBytes, 0)) != nBufferBytes)
     {
       fprintf(stderr, "ERROR: could not send to caster\n");
