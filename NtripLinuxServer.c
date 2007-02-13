@@ -1,7 +1,7 @@
 /*
  * NtripServerLinux.c
  *
- * Copyright (c) 2003...2005
+ * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
  *
  * Developed for Networked Transport of RTCM via Internet Protocol (NTRIP)
@@ -40,7 +40,7 @@
  * USA.
  */
 
-/* $Id: NtripLinuxServer.c,v 1.24 2006/11/23 14:39:50 stoecker Exp $
+/*
  * Changes - Version 0.7
  * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
  *           - socket support
@@ -77,7 +77,7 @@
  *
  * Changes - Version 0.14
  * May 16 2006  Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - bug fix in base64_encode-function
+ *           - bug fixed in base64_encode-function
  *
  * Changes - Version 0.15
  * Jun 02 2006  Georg Weber <georg.weber@bkg.bund.de>
@@ -93,8 +93,20 @@
  *           - some minor cosmetic changes
  *
  * Changes - Version 0.18
- * Nov 23 2006  Dirk Stoecker <soft@dstoecker.de>
+ * Oct 30 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
+ *           - added possibility to send receiver ID with password 
+ *             restricted to mode UDPSOCKET and TCPSOCKET.
+ *
+ * Changes - Version 0.19
+ * Nov 30 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
+ *           - bug fixed in Mode 2 
+ *
+ * Changes - Version 0.20
+ * Feb 13 2007  Dirk Stoecker <soft@dstoecker.de>
  *           - default port changed from 80 to 2101
+ *           - fixed illegal memory access
+ *           - cleanup of no data alarm timer
+ *           - fixed zero byte handling in buffers
  *
  */
 
@@ -124,7 +136,7 @@
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
 CASTER = 6, LAST};
 
-#define VERSION         "NTRIP NtripServerLinux/0.17"
+#define VERSION         "NTRIP NtripServerLinux/0.20"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -133,7 +145,7 @@ CASTER = 6, LAST};
 
 /* default destination */
 #define NTRIP_CASTER    "www.euref-ip.net"
-#define NTRIP_PORT     2101
+#define NTRIP_PORT      2101
 
 /* default sisnet source */
 #define SISNET_SERVER   "131.176.49.142"
@@ -202,6 +214,10 @@ int main(int argc, char **argv)
   const char *stream_password=0;
   
   const char *initfile = NULL;
+  
+  const char *recvrid=0;
+  const char *recvrpwd=0;
+  
   int bindmode = 0;
   int sock_id;
   char szSendBuffer[BUFSZ];
@@ -217,7 +233,7 @@ int main(int argc, char **argv)
     usage(2);
     exit(1);
   }
-  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:l:u:V:D:U:W:B"))
+  while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:x:y:l:u:V:D:U:W:B"))
   != EOF)
   {
     switch (c)
@@ -282,19 +298,25 @@ int main(int argc, char **argv)
     case 'f':
       initfile = optarg;
       break;
+    case 'x':
+      recvrid = optarg;  
+      break;      
+    case 'y':
+      recvrpwd = optarg;  
+      break;            
     case 'u':
       sisnetuser = optarg;
       break;
     case 'l':
       sisnetpassword = optarg;
       break;
-    case 'c':                  /* password */
+    case 'c':                  /* DestinationCasterPassword */
       password = optarg;
       break;
-    case 'H':                  /* host */
+    case 'H':                  /* SourceCasterHost */
       inhost = optarg;
       break;
-    case 'P':                  /* port */
+    case 'P':                  /* SourceCasterPort */
       inport = atoi(optarg);
       if(inport <= 1 || inport > 65535)
       {
@@ -583,6 +605,29 @@ int main(int argc, char **argv)
         }
       }
     }
+
+    if (recvrid && recvrpwd && ((mode == TCPSOCKET) || (mode == UDPSOCKET)))
+    {
+      if (strlen(recvrid) > (BUFSZ-3)){
+        fprintf(stderr, "Receiver ID too long\n"); exit(0);
+      }else{
+        fprintf(stderr, "Sending user ID for receiver...\n");
+        nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);      
+        strcpy(szSendBuffer, recvrid);
+        strcat(szSendBuffer,"\r\n");
+        send(gpsfd,szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT);
+      }
+      
+      if (strlen(recvrpwd) > (BUFSZ-3)){
+        fprintf(stderr, "Receiver password too long\n"); exit(0);
+      }else{
+        fprintf(stderr, "Sending user password for receiver...\n");
+        nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
+        strcpy(szSendBuffer, recvrpwd);
+        strcat(szSendBuffer,"\r\n");
+        send(gpsfd, szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT);    
+      }
+    }      
     break;
   default:
     usage(-1);
@@ -689,7 +734,7 @@ static void send_receive_loop(int sock, int fd)
       if(!nBufferBytes)
       {
         printf("WARNING: no data received from input\n");
-	sleep(3);
+        sleep(3);
         nodata = 1;
         continue;
       }
@@ -903,6 +948,8 @@ void usage(int rc)
   fprintf(stderr, "    -H hostname of TCP server (default: %s)\n",
     SERV_HOST_ADDR);
   fprintf(stderr, "    -f initfile send to server\n");
+  fprintf(stderr, "    -x receiver id\n");
+  fprintf(stderr, "    -y receiver password\n");  
   fprintf(stderr, "    -B bindmode: bind to incoming UDP stream\n");
   fprintf(stderr, "  Mode = sisnet:\n");
   fprintf(stderr, "    -P receiver port (default: %d)\n", SISNET_PORT);
