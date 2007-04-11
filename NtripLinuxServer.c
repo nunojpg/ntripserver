@@ -126,6 +126,10 @@
 #include <sys/termios.h>
 #include <sys/types.h>
 
+#ifndef COMPILEDATE
+#define COMPILEDATE " built " __DATE__
+#endif
+
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0 /* prevent compiler errors */
 #endif
@@ -923,7 +927,7 @@ __attribute__ ((noreturn))
 #endif /* __GNUC__ */
 void usage(int rc)
 {
-  fprintf(stderr, "Usage: %s [OPTIONS]\n", VERSION);
+  fprintf(stderr, "Usage: " VERSION " [OPTIONS]" COMPILEDATE "\n");
   fprintf(stderr, "  Options are: [-]           \n");
   fprintf(stderr, "    -a DestinationCaster name or address (default: %s)\n",
     NTRIP_CASTER);
