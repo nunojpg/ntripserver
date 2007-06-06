@@ -1,5 +1,5 @@
 /*
- * $Id: NtripLinuxServer.c,v 1.29 2007/06/06 12:16:08 stoecker Exp $
+ * $Id: NtripLinuxServer.c,v 1.30 2007/06/06 14:56:59 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.29 $";
-static char datestr[]     = "$Date: 2007/06/06 12:16:08 $";
+static char revisionstr[] = "$Revision: 1.30 $";
+static char datestr[]     = "$Date: 2007/06/06 14:56:59 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -884,11 +884,13 @@ int main(int argc, char **argv)
           outputmode = END;
           break;
         }
+#ifndef NDEBUG
         else
         {
           fprintf(stderr, "Destination caster response:\n%s\n"
           "connection successfull\n",szSendBuffer);
         }
+#endif
         send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
         break;
       case RTSP: /*** Ntrip-Version 2.0 RTSP / RTP ***/
