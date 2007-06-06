@@ -1,5 +1,5 @@
 /*
- * $Id: NtripLinuxServer.c,v 1.28 2007/06/06 09:44:27 stoecker Exp $
+ * $Id: NtripLinuxServer.c,v 1.29 2007/06/06 12:16:08 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.28 $";
-static char datestr[]     = "$Date: 2007/06/06 09:44:27 $";
+static char revisionstr[] = "$Revision: 1.29 $";
+static char datestr[]     = "$Date: 2007/06/06 12:16:08 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -70,7 +70,7 @@ static char datestr[]     = "$Date: 2007/06/06 09:44:27 $";
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
 CASTER = 6, LAST };
 
-enum OUTMODE { NTRIPV1, HTTP, RTSP, END };
+enum OUTMODE { HTTP = 1, RTSP = 2, NTRIPV1 = 3, END };
 
 #define AGENTSTRING     "NTRIP NtripServerLinux"
 #define BUFSZ           1024
@@ -179,8 +179,8 @@ int main(int argc, char **argv)
   int                bindmode = 0;
 
   /*** OUTPUT ***/
-  const char *       casterouthost = 0;
-  unsigned int       casteroutport = 0;
+  const char *       casterouthost = NTRIP_CASTER;
+  unsigned int       casteroutport = NTRIP_PORT;
   const char *       outhost = 0;
   unsigned int       outport = 0;
   char               post_extension[SZ] = "";
@@ -351,9 +351,21 @@ int main(int argc, char **argv)
     case 'F': /* Proxy port */
       proxyport = atoi(optarg);
       break;
-    case 'O': /* OutputMode - default: Ntrip-Version 2.0 TCP/IP */
-      if     (!strcmp(optarg,"f")) outputmode = NTRIPV1;
-      else if(!strcmp(optarg,"r")) outputmode = RTSP;
+    case 'O': /* OutputMode */
+      outputmode = 0;
+      if (!strcmp(optarg,"n") || !strcmp(optarg,"ntrip1"))
+        outputmode = NTRIPV1;
+      else if(!strcmp(optarg,"h") || !strcmp(optarg,"http"))
+        outputmode = HTTP;
+      else if(!strcmp(optarg,"r") || !strcmp(optarg,"rtsp"))
+        outputmode = RTSP;
+      else outputmode = atoi(optarg);
+      if((outputmode == 0) || (outputmode >= END))
+      {
+        fprintf(stderr, "ERROR: can't convert <%s> to a valid OutputMode\n",
+        optarg);
+        usage(-1, argv[0]);
+      }
       break;
     case 'n': /* Destination caster user ID for stream upload to mountpoint */
       user = optarg;
@@ -503,7 +515,7 @@ int main(int argc, char **argv)
       else if((inputmode == TCPSOCKET) || (inputmode == UDPSOCKET))
       {
         if(!inport) inport = SERV_TCP_PORT;
-        if(!inhost) inhost = "127.0.0.1";
+        if(!inhost) inhost = SERV_HOST_ADDR;
       }
 
       if(!(he = gethostbyname(inhost)))
@@ -764,8 +776,9 @@ int main(int argc, char **argv)
     caster.sin_port = htons(outport);
 
     /* connect to Destination caster or Proxy server*/
-    fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s\n",
-    inet_ntoa(caster.sin_addr), outport, mountpoint);
+    fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s"
+    ", mode = %s\n", inet_ntoa(caster.sin_addr), outport, mountpoint,
+    outputmode == NTRIPV1 ? "ntrip1" : outputmode == HTTP ? "http" : "rtsp");
 
     if(connect(socket_tcp, (struct sockaddr *) &caster, sizeof(caster)) < 0)
     {
@@ -809,12 +822,14 @@ int main(int argc, char **argv)
           outputmode = END;
           break;
         }
+#ifndef NDEBUG
         else
         {
           fprintf(stderr,
           "Destination caster response:\n%s\nconnection successfull\n",
           szSendBuffer);
         }
+#endif
         send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
         break;
       case HTTP: /*** Ntrip-Version 2.0 HTTP/1.1 ***/
@@ -822,12 +837,12 @@ int main(int argc, char **argv)
           "POST %s/%s HTTP/1.1\r\n"
           "Host: %s\r\n"
           "Ntrip-Version: Ntrip/2.0\r\n"
-          "User-Agent: NTRIP %s\r\n"
+          "User-Agent: %s/%s\r\n"
           "Authorization: Basic %s\r\n"
           "Ntrip-STR: %s\r\n"
           "Transfer-Encoding: chunked\r\n\r\n",
           post_extension, mountpoint, casterouthost, AGENTSTRING,
-          authorization, ntrip_str);
+          revisionstr, authorization, ntrip_str);
         if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
         {
           fprintf(stderr, "ERROR: Destination caster request to long\n");
@@ -846,7 +861,8 @@ int main(int argc, char **argv)
         {
           char *a;
           fprintf(stderr,
-          "ERROR: Destination caster's or Proxy's reply is not OK: ");
+          "ERROR: Destination caster's%s reply is not OK: ",
+          *proxyhost ? " or Proxy's" : "");
           for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
           {
             fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
@@ -856,12 +872,12 @@ int main(int argc, char **argv)
           if(!strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
           {
             fprintf(stderr,
-            " - Ntrip Version 2.0 not implemented at Destination caster"
-            " <%s> or Proxy <%s> or\n"
-            " - HTTP/1.1 not implemented at Proxy or\n"
-            " - RTSP/1.0 not implemented at Destination caster or Proxy\n\n"
-            "caster fallback: Fallback to Ntrip Version 1.0\n\n",
-            casterouthost, proxyhost);
+            " Ntrip Version 2.0 not implemented at Destination caster"
+            " <%s>%s%s%s\n%s\n"
+            "caster fallback: Fallback to Ntrip Version 1.0\n",
+            casterouthost,
+            *proxyhost ? " or Proxy <" : "", proxyhost, *proxyhost ? ">" : "",
+            *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "");
             outputmode = NTRIPV1;
             break;
           }
@@ -909,12 +925,12 @@ int main(int argc, char **argv)
           "CSeq: 1\r\n"
           "Ntrip-Version: Ntrip/2.0\r\n"
           "Ntrip-Component: Ntripserver\r\n"
-          "User-Agent: NTRIP %s \r\n"
+          "User-Agent: %s/%s\r\n"
           "Transport: RTP/GNSS;unicast;client_port=%u\r\n"
           "Authorization: Basic %s\r\n"
           "Ntrip-STR: %s\r\n\r\n",
-          casterouthost, rtsp_extension, mountpoint, AGENTSTRING, client_port,
-          authorization, ntrip_str);
+          casterouthost, rtsp_extension, mountpoint, AGENTSTRING, revisionstr,
+          client_port, authorization, ntrip_str);
         if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
         {
           fprintf(stderr, "ERROR: Destination caster request to long\n");
@@ -935,7 +951,8 @@ int main(int argc, char **argv)
           {
             char *a;
             fprintf(stderr,
-            "ERROR: Destination caster's or Proxy's reply is not OK: ");
+            "ERROR: Destination caster's%s reply is not OK: ",
+            *proxyhost ? " or Proxy's" : "");
             for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
             {
               fprintf(stderr, "%c", isprint(*a) ? *a : '.');
@@ -947,22 +964,24 @@ int main(int argc, char **argv)
               if(strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
               {
                 fprintf(stderr,
-                " - RTSP not implemented at Destination caster <%s> or"
-                " Proxy <%s>\n\n"
+                " - RTSP not implemented at Destination caster <%s>%s%s%s\n\n"
                 "caster fallback: Fallback to Ntrip Version 2.0 in TCP/IP"
-                " mode\n\n", casterouthost, proxyhost);
+                " mode\n\n", casterouthost,
+                *proxyhost ? " or Proxy <" :"", proxyhost, *proxyhost ? ">":"");
                 outputmode = HTTP;
                 break;
               }
               else
               {
                 fprintf(stderr,
-                " - Ntrip-Version 2.0 not implemented at Destination caster"
-                "<%s> or Proxy <%s> or\n"
-                " - HTTP/1.1 not implemented at Proxy or\n"
-                " - RTSP/1.0 not implemented at Destination caster or Proxy\n\n"
-                "caster fallback: Fallback to Ntrip Version 1.0\n\n",
-                casterouthost, proxyhost);
+                " Ntrip-Version 2.0 not implemented at Destination caster"
+                "<%s>%s%s%s\n%s"
+                " or RTSP/1.0 not implemented at Destination caster%s\n\n"
+                "caster fallback: Fallback to Ntrip Version 1.0\n",
+                casterouthost, *proxyhost ? " or Proxy <" :"", proxyhost,
+                *proxyhost ? ">":"",
+                *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "",
+                *proxyhost ? " or Proxy" :"");
                 outputmode = NTRIPV1;
                 break;
               }
@@ -973,10 +992,12 @@ int main(int argc, char **argv)
               break;
             }
           }
+#ifndef NDEBUG
           else
           {
             fprintf(stderr, "Destination caster response:\n%s\n",szSendBuffer);
           }
+#endif
           if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n"))
           && (strstr(szSendBuffer,"CSeq: 1\r\n")))
           {
@@ -1174,7 +1195,7 @@ socklen_t length)
       /* Signal Handling */
       if(signal_was_caught())
       {
-        fprintf(stderr, "NtripLinuxServer exits send-receive mode \n");
+        fprintf(stderr, "NtripLinuxServer exits send-receive mode\n");
         break;
       }
       gettimeofday(&now, NULL);
@@ -1439,9 +1460,10 @@ void usage(int rc, char *name)
   fprintf(stderr, "                         for protected streams if <InputMode> = 6\n");
   fprintf(stderr, "       -W <SourcePass>   Source caster password for input stream access, mandatory\n");
   fprintf(stderr, "                         for protected streams if <InputMode> = 6\n\n");
-  fprintf(stderr, "    -O <OutputMode> Sets the output mode for communatation with the destination\n");
-  fprintf(stderr, "       caster (r = NTRIP Version 2.0 Caster in RTSP/RTP mode, t = Ntrip Version 2.0\n");
-  fprintf(stderr, "       Caster in TCP/IP mode, f = NTRIP Version 1.0 Caster)\n\n");
+  fprintf(stderr, "    -O <OutputMode> Sets output mode for communatation with destination caster\n");
+  fprintf(stderr, "       0 = h = http: Ntrip Version 2.0 Caster in TCP/IP mode\n");
+  fprintf(stderr, "       1 = r = rtsp: NTRIP Version 2.0 Caster in RTSP/RTP mode\n");
+  fprintf(stderr, "       2 = n = ntrip1: NTRIP Version 1.0 Caster\n\n");
   fprintf(stderr, "       Defaults to NTRIP1.0, but wil change to 2.0 in future versions\n");
   fprintf(stderr, "       Note that the program automatically falls back from mode r to mode t and\n");
   fprintf(stderr, "       further to mode f if necessary.\n\n");
@@ -1491,7 +1513,7 @@ static int signal_was_caught(void)
 {
   fflush(stdout);
   if(sigint_received)
-    fprintf(stderr, "\nSIGINT received: ");
+    fprintf(stderr, "SIGINT received: ");
 
   return (sigint_received);
 } /* signal_was_caught */
@@ -1555,16 +1577,20 @@ static int encode(char *buf, int size, const char *user, const char *pwd)
 *********************************************************************/
 static int send_to_caster(char *input, int socket, int input_size)
 {
-int send_error = 1;
+ int send_error = 1;
 
   if((send(socket, input, (size_t)input_size, 0)) != input_size)
   {
     fprintf(stderr, "ERROR: could not send full header to Destination caster\n");
     send_error = 0;
-  }else{
+  }
+#ifndef NDEBUG
+  else
+  {
     fprintf(stderr, "\nDestination caster request:\n");
     fprintf(stderr, "%s", input);
   }
+#endif
   return send_error;
 }/* send_to_caster */
 
@@ -1586,10 +1612,12 @@ int session, char *rtsp_ext, int in_fd)
       perror("ERROR: close input device ");
       exit(0);
     }
+#ifndef NDEBUG
     else
     {
       fprintf(stderr, "\nclose input device: successful\n");
     }
+#endif
   }
 
   if(sock_udp  != 0)
@@ -1610,17 +1638,21 @@ int session, char *rtsp_ext, int in_fd)
       send_to_caster(send_buf, sock_tcp, size_send_buf); strcpy(send_buf,"");
       size_send_buf = recv(sock_tcp, send_buf, sizeof(send_buf), 0);
       send_buf[size_send_buf] = '\0';
+#ifndef NDEBUG
       fprintf(stderr, "Destination caster response:\n%s", send_buf);
+#endif
     }
     if(close(sock_udp)==-1)
     {
       perror("ERROR: close udp socket");
       exit(0);
     }
+#ifndef NDEBUG
     else
     {
       fprintf(stderr, "close udp socket:   successful\n");
     }
+#endif
   }
 
   if(close(sock_tcp)==-1)
@@ -1628,8 +1660,10 @@ int session, char *rtsp_ext, int in_fd)
     perror("ERROR: close tcp socket");
     exit(0);
   }
+#ifndef NDEBUG
   else
   {
     fprintf(stderr, "close tcp socket:   successful\n\n");
   }
+#endif
 } /* close_session */
