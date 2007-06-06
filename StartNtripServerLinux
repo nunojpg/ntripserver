@@ -1,0 +1,5 @@
+#!/bin/bash
+# Purpose: Start NtripServerLinux
+
+while true; do ./NtripServerLinux -a www.euref-ip.net -p 80 -m Mountpoint -c password -M 1 -b 19200 -i /dev/gps; sleep 20; done
+

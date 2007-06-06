@@ -1,5 +1,5 @@
 /*
- * NtripServerLinux.c
+ * $Id: NtripLinuxClient.c,v 1.27 2007/05/16 14:16:21 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -9,7 +9,6 @@
  *
  * Designed by Informatik Centrum Dortmund http://www.icd.de
  *
- * NTRIP is currently an experimental technology.
  * The BKG disclaims any liability nor responsibility to any person or
  * entity with respect to any loss or damage caused, or alleged to be 
  * caused, directly or indirectly by the use and application of the NTRIP 
@@ -40,75 +39,9 @@
  * USA.
  */
 
-/*
- * Changes - Version 0.7
- * Sep 22 2003  Steffen Tschirpke <St.Tschirpke@actina.de>
- *           - socket support
- *           - command line option handling
- *           - error handling
- *           - help screen
- *
- * Changes - Version 0.9
- * Feb 15 2005  Dirk Stoecker <soft@dstoecker.de>
- *           - some minor updates, fixed serial baudrate settings
- *
- * Changes - Version 0.10
- * Apr 05 2005  Dirk Stoecker <soft@dstoecker.de>
- *           - some cleanup and miscellaneous fixes
- *           - replaced non-working simulate with file input (stdin)
- *           - TCP sending now somewhat more stable
- *           - cleanup of error handling
- *           - Modes may be symbolic and not only numeric
- *
- * Changes - Version 0.11
- * Jun 02 2005  Dirk Stoecker <soft@dstoecker.de>
- *           - added SISNeT support
- *           - added UDP support
- *           - cleanup of host and port handling
- *           - added inactivity alarm of 60 seconds
- *
- * Changes - Version 0.12
- * Jun 07 2005  Dirk Stoecker <soft@dstoecker.de>
- *           - added UDP bindmode
- *
- * Changes - Version 0.13
- * Apr 25 2006  Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - added stream retrieval from caster
- *
- * Changes - Version 0.14
- * May 16 2006  Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - bug fixed in base64_encode-function
- *
- * Changes - Version 0.15
- * Jun 02 2006  Georg Weber <georg.weber@bkg.bund.de>
- *           - modification for SISNeT 3.1 protocol
- *
- * Changes - Version 0.16
- * Jul 06 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - more flexible caster's response
- *
- * Changes - Version 0.17
- * Jul 27 2006  Dirk Stoecker <soft@dstoecker.de>
- *           - fixed some problems with caster download
- *           - some minor cosmetic changes
- *
- * Changes - Version 0.18
- * Oct 30 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - added possibility to send receiver ID with password 
- *             restricted to mode UDPSOCKET and TCPSOCKET.
- *
- * Changes - Version 0.19
- * Nov 30 2006 Andrea Stuerze <andrea.stuerze@bkg.bund.de>
- *           - bug fixed in Mode 2 
- *
- * Changes - Version 0.20
- * Feb 13 2007  Dirk Stoecker <soft@dstoecker.de>
- *           - default port changed from 80 to 2101
- *           - fixed illegal memory access
- *           - cleanup of no data alarm timer
- *           - fixed zero byte handling in buffers
- *
- */
+/* CVS revision and version */
+static char revisionstr[] = "$Revision: 1.27 $";
+static char datestr[]     = "$Date: 2007/05/16 14:16:21 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -140,7 +73,7 @@
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
 CASTER = 6, LAST};
 
-#define VERSION         "NTRIP NtripServerLinux/0.20"
+#define AGENTSTRING     "NTRIP NtripServerLinux"
 #define BUFSZ           1024
 
 /* default socket source */
@@ -167,7 +100,7 @@ static int gpsfd               = -1;
 /* Forward references */
 static int openserial(const char * tty, int blocksz, int baud);
 static void send_receive_loop(int sock, int fd);
-static void usage(int);
+static void usage(int, char*);
 static int encode(char *buf, int size, const char *user, const char *pwd);
 
 #ifdef __GNUC__
@@ -229,12 +162,32 @@ int main(int argc, char **argv)
   struct hostent *he;
   struct sockaddr_in addr;
 
+  setbuf(stdout, 0);
+  setbuf(stdin, 0);
+  setbuf(stderr, 0);
+
+  char *a;
+  int i = 0;
+  for(a = revisionstr+11; *a && *a != ' '; ++a)
+    revisionstr[i++] = *a;
+  revisionstr[i] = 0;
+  datestr[0] = datestr[7];
+  datestr[1] = datestr[8];
+  datestr[2] = datestr[9];
+  datestr[3] = datestr[10];
+  datestr[5] = datestr[12];
+  datestr[6] = datestr[13];
+  datestr[8] = datestr[15];
+  datestr[9] = datestr[16];
+  datestr[4] = datestr[7] = '-';
+  datestr[10] = 0;
+
   signal(SIGALRM,sighandler_alarm);
   alarm(ALARMTIME);
   /* get and check program arguments */
   if(argc <= 1)
   {
-    usage(2);
+    usage(2, argv[0]);
     exit(1);
   }
   while((c = getopt(argc, argv, "M:i:h:b:p:s:a:m:c:H:P:f:x:y:l:u:V:D:U:W:B"))
@@ -253,7 +206,7 @@ int main(int argc, char **argv)
       if((mode == 0) || (mode >= LAST))
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid mode\n", optarg);
-        usage(-1);
+        usage(-1, argv[0]);
       }
       break;
     case 'i':                  /* gps serial ttyport */
@@ -269,7 +222,7 @@ int main(int argc, char **argv)
       else
       {
         fprintf(stderr, "ERROR: unknown SISNeT version %s\n", optarg);
-        usage(-2);
+        usage(-2, argv[0]);
       }
       break;
     case 'b':                  /* serial ttyin speed */
@@ -278,7 +231,7 @@ int main(int argc, char **argv)
       {
         fprintf(stderr, "ERROR: can't convert %s to valid serial speed\n",
           optarg);
-        usage(1);
+        usage(1, argv[0]);
       }
       break;
     case 'a':                  /* http server IP address A.B.C.D */
@@ -290,7 +243,7 @@ int main(int argc, char **argv)
       {
         fprintf(stderr,
           "ERROR: can't convert %s to a valid HTTP server port\n", optarg);
-        usage(1);
+        usage(1, argv[0]);
       }
       break;
     case 'm':                  /* http server mountpoint */
@@ -326,7 +279,7 @@ int main(int argc, char **argv)
       {
         fprintf(stderr, "ERROR: can't convert %s to a valid port number\n",
           optarg);
-        usage(1);
+        usage(1, argv[0]);
       }
       break;
     case 'D':
@@ -340,10 +293,10 @@ int main(int argc, char **argv)
      break;
     case 'h':                  /* help */
     case '?':
-      usage(0);
+      usage(0, argv[0]);
       break;
     default:
-      usage(2);
+      usage(2, argv[0]);
       break;
     }
   }
@@ -359,7 +312,7 @@ int main(int argc, char **argv)
       fprintf(stderr, " %s", *argv++);
     }
     fprintf(stderr, "\n");
-    usage(1);                   /* never returns */
+    usage(1, argv[0]);                   /* never returns */
   }
 
   if(mountpoint == NULL)
@@ -428,7 +381,7 @@ int main(int argc, char **argv)
       if(!(he = gethostbyname(inhost)))
       {
         fprintf(stderr, "ERROR: host %s unknown\n", inhost);
-        usage(-2);
+        usage(-2, argv[0]);
       }
 
       if((gpsfd = socket(AF_INET, mode == UDPSOCKET
@@ -479,8 +432,8 @@ int main(int argc, char **argv)
           /* leave some space for login */
           nBufferBytes=snprintf(szSendBuffer, sizeof(szSendBuffer)-40,
           "GET /%s HTTP/1.0\r\n"
-          "User-Agent: %s\r\n"
-          "Authorization: Basic ", stream_name, VERSION);
+          "User-Agent: %s/%s\r\n"
+          "Authorization: Basic ", stream_name, AGENTSTRING, revisionstr);
           /* second check for old glibc */
           if(nBufferBytes > (int)sizeof(szSendBuffer)-40 || nBufferBytes < 0)
           {
@@ -503,8 +456,8 @@ int main(int argc, char **argv)
         {
           nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
           "GET /%s HTTP/1.0\r\n"
-          "User-Agent: %s\r\n"
-          "\r\n", stream_name, VERSION);
+          "User-Agent: %s/%s\r\n"
+          "\r\n", stream_name, AGENTSTRING, revisionstr);
         }
         if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
         != nBufferBytes)
@@ -634,7 +587,7 @@ int main(int argc, char **argv)
     }      
     break;
   default:
-    usage(-1);
+    usage(-1, argv[0]);
     break;
   }
 
@@ -644,7 +597,7 @@ int main(int argc, char **argv)
     if(!(he = gethostbyname(outhost)))
     {
       fprintf(stderr, "ERROR: host %s unknown\n", outhost);
-      usage(-2);
+      usage(-2, argv[0]);
     }
 
     /* create socket */
@@ -675,7 +628,7 @@ int main(int argc, char **argv)
       sizeof(const char *));
     /* send message to caster */
     nBufferBytes = sprintf(szSendBuffer, "SOURCE %s /%s\r\nSource-Agent: "
-    VERSION "\r\n\r\n", password, mountpoint);
+    "%s/%s\r\n\r\n", password, mountpoint, AGENTSTRING, revisionstr);
     if((send(sock_id, szSendBuffer, (size_t)nBufferBytes, 0)) != nBufferBytes)
     {
       fprintf(stderr, "ERROR: could not send to caster\n");
@@ -925,9 +878,10 @@ static
 #ifdef __GNUC__
 __attribute__ ((noreturn))
 #endif /* __GNUC__ */
-void usage(int rc)
+void usage(int rc, char *name)
 {
-  fprintf(stderr, "Usage: " VERSION " [OPTIONS]" COMPILEDATE "\n");
+  fprintf(stderr, "Version %s (%s) GPL" COMPILEDATE "\nUsage:\n%s [OPTIONS]",
+    revisionstr, datestr, name);
   fprintf(stderr, "  Options are: [-]           \n");
   fprintf(stderr, "    -a DestinationCaster name or address (default: %s)\n",
     NTRIP_CASTER);

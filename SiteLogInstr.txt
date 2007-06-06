@@ -1,0 +1,217 @@
+Instructions for filling out IGS site logs
+1 Dec 2003 (added Height Diff to Ant instructions)
+
+See log form at ftp://igscb.jpl.nasa.gov/pub/station/general/blank.log
+
+General
+=======
+
+Please prepare site logs in plain ASCII.
+
+Line length is limited to 80 characters.
+
+See http://igscb.jpl.nasa.gov/network/sitelog-submissions.html for
+submission instructions, or email your log to igscb.jpl.nasa.gov if 
+you prefer.  Site logs emailed manually are usually handled by
+the CB within about one business day.
+
+Date and time formats are ISO 8061; see http://www.iso.ch/markete/8601.pdf
+As a summary, CC=2 digit century
+              YY=2 digit year
+              MM=2 digit month
+              DD=2 digit day of month
+              T=date/time separator
+              hh=2 digit hour
+              mm=2 digit minutes of hour
+              Z=UTC indicator
+              /=separator when begin & end times are given
+
+Latitude/Longitude formats are aligned to ISO 6709:
+  Lat:  +/-DDMMSS.SS
+  Long: +/-DDDMMSS.SS
+A + or - sign is required.  Leading zeroes must be used as appropriate
+to maintain the DDMMSS and DDDMMSS format.
+
+"etc" indicates you may enter any relevant answer, not just a choice 
+ofthe suggestions shown.
+
+"F7.4," "A4" and so on indicate the  FORTRAN-style format which the 
+response should have.
+     Example     12345.7 = F7.1
+                    ABCD = A4
+
+Blocks which have a "N.x" definition (namely sections 3-10) should 
+always have the complete historic set of information; when a change is 
+made, the previous information is left (for example in section 3.1) 
+and the new information is placed in a new block numbered 3.2.  Please 
+leave the .x  sections uncompleted to remind yourself of the format 
+when the next change occurs.  
+
+Please remove the response hints  such as "(F7.4 N/S)" as you fill out 
+the log (except in the .x sections and Date Removed fields for 
+currently installed equipment, which you will leave).  If an
+answer in an optional field is unknown, try to learn the answer for 
+the next log update.  
+
+If you have any questions not answered here, please feel free to 
+contact the IGS Central Bureau:igscb@igscb.jpl.nasa.gov
+
+Special Instructions  by section
+================================
+
+0.   Form
+-----------
+
+If Update:
+Previous Site Log       : (ssss_CCYYMMDD.log)
+     If the site already has a log at the IGS Central Bureau, enter 
+     the filename currently found under 
+     ftp://igscb.jpl.nasa.gov/pub/station/log/     
+     ssss = 4 character site name
+
+If Update:
+Modified/Added Sections : (n.n,n.n,...)
+     Enter the sections which have changed from the previous version 
+     of the  log.  Example: 3.2, 4.2
+
+1.   Site Identification of the GNSS Monument
+---------------------------------------------
+
+IERS DOMES Number        : (A9)
+     This is strictly required.  See 
+     http://lareg.ensg.ign.fr/ITRF/domesreq.html to obtain one.
+
+Monument Description     : (PILLAR/BRASS PLATE/STEEL MAST/FICTIVE/etc)
+     Enter one or more elements as necessary to describe the monument.
+
+Additional Information   : (multiple lines)
+     Suggestions: electrical isolation
+
+2. Site Location Information
+-----------------------------
+
+Approximate Position (ITRF)
+     This should be to a one meter precision.  The elevation is to be
+given as an F7.1 number representing an ellipsoidal height.
+     
+3.  GNSS Receiver Information
+--------------------------------------
+
+Receiver Type            : (A20, from rcvr_ant.tab; see instructions)
+     Please find your receiver in 
+     ftp://igscb.jpl.nasa.gov/pub/station/general/rcvr_ant.tab and use 
+     the official name, taking care to get capital letters, hyphens, 
+     etc. exactly correct.  If you do not find a listing for your 
+     receiver, please notify the IGS Central Bureau 
+     (igscb@igscb.jpl.nasa.gov).
+
+Serial Number            : (A20)
+     Keep the 5 significant characters of the serial number field in 
+     SINEX in mind: do not enter "S/N 12345" instead of "12345" since 
+     valuable information will be lost.
+
+Firmware Version         : (A11)
+     Keep the 11 significant characters of the field in SINEX in mind.
+
+ Elevation Cutoff Setting : (deg)
+     Please respond with the tracking cutoff as set in the receiver, 
+     regardless of terrain or obstructions in the area.
+
+Temperature Stabiliz.    : (none or tolerance in degrees C.)
+     This refers to the temperature of the room in which the receiver 
+     is housed.
+
+Date Removed             : (CCYY-MM-DDThh:mmZ)
+     In the block for the receiver currently in operation, leave this 
+     line as is to remind yourselt of the format when the next receiver 
+     change is made.
+
+4.   GNSS Antenna Information
+---------------------------------------
+
+Antenna Type             : (A20 from rcvr_ant.tab; see instructions)
+     Please find your antenna in 
+     ftp://igscb.jpl.nasa.gov/pub/station/general/rcvr_ant.tab and 
+     use the official name, taking care to get capital letters, hyphens, 
+     etc. exactly correct.  If you do not find a listing for your 
+     antenna, please notify the IGS Central Bureau 
+     (igscb@igscb.jpl.nasa.gov).  Please do not use antenna names from a 
+     "Previously valid" section.  Choose the corresponding new antenna 
+     name.  You may indicate a Radome code from rcvr_ant.tab in columns 
+     17-20 of the Antenna Type if desired.
+
+Serial Number            : (A20)
+     Keep the 5 significant characters of the serial number field in 
+     SINEX in mind: do not enter "S/N 12345" instead of "12345" since 
+     valuable information will be lost.
+
+Antenna Reference Point  : (BPA/BCR/XXX from "antenna.gra"; see instructions)
+     Locate your antenna in the file 
+     ftp://igscb.jpl.nasa.gov/pub/station/general/antenna.gra 
+     Indicate the three-letter abbreviation for the point which is 
+     indicated equivalent to ARP for your antenna.  Contact the Central 
+     Bureau (igscb@igscb.jpl.nasa.gov) if your antenna does not appear.
+
+Marker->ARP Up Ecc. (m)  : (F8.4) 
+     This is the antenna height measured to an accuracy of 1mm 
+     and defined as the vertical distance of the ARP from the marker 
+     described in section 1.
+
+Alignment from True N    : (deg; + is clockwise/east)
+     The positive direction is clockwise, so that due east
+     would be equivalent to a response of "+90"
+
+Antenna Radome Type      : (A4 from rcvr_ant.tab; see instructions)
+     Place a Radome code from
+     ftp://igscb.jpl.nasa.gov/pub/station/general/rcvr_ant.tab here.  
+     "NONE" indicates there is no radome.
+
+Date Removed             : (CCYY-MM-DDThh:mmZ)
+     In the block for the antenna currently in operation, leave this 
+     line as is to remind yourselt of the format when the next antenna 
+     change is made.
+
+8. Meterological Information
+-------------------------------------------------------------
+       Height Diff to Ant     : (m)
+This is sensor height minus antenna height.  In other words, positive
+if the sensor is above the antenna.  Please note that this convention
+was used in the Notes.
+
+12.  Responsible Agency (if different from 9.)
+-------------------------------------------------------------
+The primary contacts listed here should always be the first choice for 
+questions about operation of the site.  This person will receive 
+automated emails regarding site log or RINEX errors and should be 
+someone who can answer  questions about the configuration and data 
+delivery for this site.
+
+13.  More Information
+-------------------------------------------------------------
+     Primary Data Center      :
+     Secondary Data Center    :
+Please list the DC where the station's data ordinarily goes first as
+"Primary."  Use "Secondary" either for a second location where
+the station's data always goes, or would go in the case of a
+failure with the Primary DC.
+
+     Additional Information:
+Anything you feel is important.  Some possibilities to consider are:
+- Elevation mask table indicating physical mask effects such as
+ AZ   ELEV    AZ   ELEV    AZ   ELEV    AZ   ELEV
+ 10     8     20    12     30    10     40     8
+ 50     5     60    12     70     8     80     8
+ 90     5    100     5    110     5    120     5
+130     5    140     5    150     8    160     8
+170     5    180     3    190     5    200     8
+210     8    220     8    230     5    240     5
+250     5    260     8    270    10    280    12
+290    12    300    12    310    12    320     8
+330     5    340     5    350     8    360     8
+(This could also be kept at your local www site and referred to
+by URL in the log).
+
+
+ 
+
+
