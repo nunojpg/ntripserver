@@ -98,6 +98,9 @@ The user may call the program with the following options:
     -U SourceCaster username
     -W SourceCaster password
 
+There are additional options to support NTRIP version 2.0. These are currently
+still under development and should be used with care.
+
 Example:
 NtripServerLinux -a www.euref-ip.net -p 2101 -m mountpoint -c password -M 1 -b 19200 -i /dev/ttyS0
 
