@@ -1,10 +1,10 @@
 #!/bin/make
 
-NtripServerLinux: NtripLinuxServer.c
+ntripserver: NtripLinuxServer.c
 	$(CC) -Wall -W -O3 $? -DNDEBUG -o $@
 
 debug: NtripLinuxServer.c
-	$(CC) -Wall -W -O3 $? -o NtripServerLinux
+	$(CC) -Wall -W -O3 $? -o ntripserver
 
 clean:
 	$(RM) -f NtripServerLinux core

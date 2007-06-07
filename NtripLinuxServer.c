@@ -1,5 +1,5 @@
 /*
- * $Id: NtripLinuxServer.c,v 1.30 2007/06/06 14:56:59 stoecker Exp $
+ * $Id: NtripLinuxServer.c,v 1.31 2007/06/06 15:11:54 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.30 $";
-static char datestr[]     = "$Date: 2007/06/06 14:56:59 $";
+static char revisionstr[] = "$Revision: 1.31 $";
+static char datestr[]     = "$Date: 2007/06/06 15:11:54 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -72,7 +72,7 @@ CASTER = 6, LAST };
 
 enum OUTMODE { HTTP = 1, RTSP = 2, NTRIPV1 = 3, END };
 
-#define AGENTSTRING     "NTRIP NtripServerLinux"
+#define AGENTSTRING     "NTRIP NtripLinuxServer"
 #define BUFSZ           1024
 #define SZ              64
 
