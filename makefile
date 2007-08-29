@@ -7,7 +7,7 @@ debug: NtripLinuxServer.c
 	$(CC) -Wall -W -O3 $? -o ntripserver
 
 clean:
-	$(RM) -f NtripServerLinux core
+	$(RM) -f ntripserver core
 
 archive:
-	zip NtripServerLinux.zip -9 NTRIP2.txt makefile NtripLinuxServer.c NtripProvider.doc ReadmeServerLinux.txt SiteLogExample.txt SiteLogInstr.txt StartNtripServerLinux
+	zip ntripserver.zip -9 NTRIP2.txt makefile NtripLinuxServer.c NtripProvider.doc ReadmeServerLinux.txt SiteLogExample.txt SiteLogInstr.txt StartNtripServerLinux
