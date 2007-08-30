@@ -1,5 +1,5 @@
 #!/usr/bin/make
-# $Id$
+# $Id: makefile,v 1.6 2007/08/30 07:45:59 stoecker Exp $
 
 ntripserver: ntripserver.c
 	$(CC) -Wall -W -O3 $? -DNDEBUG -o $@
@@ -11,5 +11,4 @@ clean:
 	$(RM) -f ntripserver core
 
 archive:
-	tar -xzf ntripserver.tgz -9 makefile ntripserver.c NtripProvider.doc \
-        README SiteLogExample.txt SiteLogInstr.txt startntripserver.sh
+	tar -cvzf ntripserver.tgz makefile ntripserver.c README startntripserver.sh
