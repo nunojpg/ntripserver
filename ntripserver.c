@@ -1,5 +1,5 @@
 /*
- * $Id: NtripLinuxServer.c,v 1.32 2007/06/07 07:47:24 stoecker Exp $
+ * $Id: ntripserver.c,v 1.33 2007/08/30 07:45:36 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.32 $";
-static char datestr[]     = "$Date: 2007/06/07 07:47:24 $";
+static char revisionstr[] = "$Revision: 1.33 $";
+static char datestr[]     = "$Date: 2007/08/30 07:45:36 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -70,9 +70,9 @@ static char datestr[]     = "$Date: 2007/06/07 07:47:24 $";
 enum MODE { SERIAL = 1, TCPSOCKET = 2, INFILE = 3, SISNET = 4, UDPSOCKET = 5,
 CASTER = 6, LAST };
 
-enum OUTMODE { HTTP = 1, RTSP = 2, NTRIPV1 = 3, END };
+enum OUTMODE { HTTP = 1, RTSP = 2, NTRIP1 = 3, END };
 
-#define AGENTSTRING     "NTRIP NtripLinuxServer"
+#define AGENTSTRING     "NTRIP ntripserver"
 #define BUFSZ           1024
 #define SZ              64
 
@@ -99,7 +99,13 @@ static const char *filepath    = "/dev/stdin";
 static enum MODE inputmode     = INFILE;
 static int sisnet              = 31;
 static int gpsfd               = -1;
+static int socket_tcp          = -1;
+static int socket_udp          = -1;
 static int sigint_received     = 0;
+static int sigalarm_received   = 0;
+static int sigpipe_received    = 0;
+static int reconnect_sec       = 1;
+
 
 /* Forward references */
 static int  openserial(const char * tty, int blocksz, int baud);
@@ -108,25 +114,15 @@ static void send_receive_loop(int sock, int fd, int outmode,
 static void usage(int, char *);
 static int  encode(char *buf, int size, const char *user, const char *pwd);
 static int  send_to_caster(char *input, int socket, int input_size);
-static void close_session(int sock_udp, int sock_tcp,
-  const char *caster_addr, const char *mountpoint, int cseq,
-  int session, char *rtsp_ext, int in_fd);
+static void close_session(const char *caster_addr, const char *mountpoint, 
+  int cseq, int session, char *rtsp_ext, int fallback);
+static int  reconnect(int rec_sec, int rec_sec_max);
 
 /* Signal Handling */
 static void handle_sigint(int sig);
+static void handle_alarm(int sig);
+static void handle_sigpipe(int sig);
 static void setup_signal_handler(int sig, void (*handler)(int));
-static int  signal_was_caught(void);
-
-#ifdef __GNUC__
-static __attribute__ ((noreturn)) void sighandler_alarm(
-int sig __attribute__((__unused__)))
-#else /* __GNUC__ */
-static void sighandler_alarm(int sig)
-#endif /* __GNUC__ */
-{
-  fprintf(stderr, "ERROR: more than %d seconds no activity\n", ALARMTIME);
-  exit(1);
-}
 
 /*
 * main
@@ -191,12 +187,10 @@ int main(int argc, char **argv)
   const char *       user = "";
   const char *       password = "";
 
-  int                socket_tcp = 0;
-  int                outputmode = NTRIPV1;
+  int                outputmode = NTRIP1;
 
   struct sockaddr_in casterRTP;
   struct sockaddr_in local;
-  int                socket_udp = 0;
   int                client_port = 0;
   int                server_port = 0;
   int                session = 0;
@@ -210,6 +204,8 @@ int main(int argc, char **argv)
   char *             dlim = " \r\n=";
   char *             token;
   char *             tok_buf[BUFSZ];
+
+  int                reconnect_sec_max = 0;
 
   setbuf(stdout, 0);
   setbuf(stdin, 0);
@@ -234,8 +230,14 @@ int main(int argc, char **argv)
   }
 
   /* setup signal handler for timeout */
-  signal(SIGALRM,sighandler_alarm);
+  setup_signal_handler(SIGALRM, handle_alarm);
   alarm(ALARMTIME);
+
+  /* setup signal handler for CTRL+C */
+  setup_signal_handler(SIGINT, handle_sigint);
+  
+/* setup signal handler for boken pipe */
+  setup_signal_handler(SIGPIPE, handle_sigpipe);
 
   /* get and check program arguments */
   if(argc <= 1)
@@ -244,7 +246,7 @@ int main(int argc, char **argv)
     exit(1);
   }
   while((c = getopt(argc, argv,
-  "M:i:h:b:p:s:a:m:c:H:P:f:x:y:l:u:V:D:U:W:B:O:E:F:N:n:")) != EOF)
+  "M:i:h:b:p:s:a:m:c:H:P:f:x:y:l:u:V:D:U:W:O:E:F:R:N:n:B")) != EOF)
   {
     switch (c)
     {
@@ -351,10 +353,13 @@ int main(int argc, char **argv)
     case 'F': /* Proxy port */
       proxyport = atoi(optarg);
       break;
+    case 'R':  /* maximum delay between reconnect attempts in seconds */
+       reconnect_sec_max = atoi(optarg);
+       break;
     case 'O': /* OutputMode */
       outputmode = 0;
       if (!strcmp(optarg,"n") || !strcmp(optarg,"ntrip1"))
-        outputmode = NTRIPV1;
+        outputmode = NTRIP1;
       else if(!strcmp(optarg,"h") || !strcmp(optarg,"http"))
         outputmode = HTTP;
       else if(!strcmp(optarg,"r") || !strcmp(optarg,"rtsp"))
@@ -398,10 +403,24 @@ int main(int argc, char **argv)
     usage(1, argv[0]);                   /* never returns */
   }
 
-  if(*ntrip_str && (outputmode == NTRIPV1))
+  if(outputmode != NTRIP1)
+  {
+     fprintf(stderr, "\nWARNING: *** NTRIP VERSION 2 PROTOCOL IS STILL"
+      " BETA AND MAY BE CHANGED ***\n\n");
+  }
+  
+  if(*ntrip_str && (outputmode == NTRIP1))
   {
      fprintf(stderr, "WARNING: OutputMode is Ntrip version 1.0"
      " - Ntrip-STR will not be considered\n");
+  }
+
+  if((reconnect_sec_max > 0) && (reconnect_sec_max < 256))
+  {
+    fprintf(stderr,
+    "WARNING: maximum delay between reconnect attemts changed from %d to 256 seconds\n"
+    , reconnect_sec_max);
+    reconnect_sec_max = 256;
   }
 
   if(!mountpoint)
@@ -458,7 +477,7 @@ int main(int argc, char **argv)
     i = snprintf(szSendBuffer, sizeof(szSendBuffer),"http://%s:%d", casterinhost, casterinport);
     if((i > SZ) || (i < 0))
     {
-      fprintf(stderr, "ERROR: Destination caster name/port to long - length = %d (max: %d)\n", i, SZ);
+      fprintf(stderr,"ERROR: Destination caster name/port to long - length = %d (max: %d)\n", i, SZ);
       exit(0);
     }
     else
@@ -474,482 +493,423 @@ int main(int argc, char **argv)
     inhost    = casterinhost;  inport  = casterinport;
   }
 
-  /*** InputMode handling ***/
-  switch(inputmode)
+  while(inputmode != LAST)
   {
-  case INFILE:
+    int input_init = 1;
+    /*** InputMode handling ***/
+    switch(inputmode)
     {
-      if((gpsfd = open(filepath, O_RDONLY)) < 0)
+    case INFILE:
       {
-        perror("ERROR: opening input file");
-        exit(1);
+	if((gpsfd = open(filepath, O_RDONLY)) < 0)
+	{
+          perror("ERROR: opening input file");
+          exit(1);
+	}
+	/* set blocking inputmode in case it was not set
+          (seems to be sometimes for fifo's) */
+	fcntl(gpsfd, F_SETFL, 0);
+	printf("file input: file = %s\n", filepath);
       }
-      /* set blocking inputmode in case it was not set
-        (seems to be sometimes for fifo's) */
-      fcntl(gpsfd, F_SETFL, 0);
-      printf("file input: file = %s\n", filepath);
-    }
-    break;
-  case SERIAL: /* open serial port */
-    {
-      gpsfd = openserial(ttyport, 1, ttybaud);
-      if(gpsfd < 0)
+      break;
+    case SERIAL: /* open serial port */
       {
-        exit(1);
+	gpsfd = openserial(ttyport, 1, ttybaud);
+	if(gpsfd < 0)
+	{
+          exit(1);
+	}
+	printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
       }
-      printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
-    }
-    break;
-  case TCPSOCKET: case UDPSOCKET: case SISNET: case CASTER:
-    {
+      break;
+    case TCPSOCKET: case UDPSOCKET: case SISNET: case CASTER:
+      {
+	if(inputmode == SISNET)
+	{
+          if(!inhost) inhost = SISNET_SERVER;
+          if(!inport) inport = SISNET_PORT;
+	}
+	else if(inputmode == CASTER)
+	{
+          if(!inport) inport = NTRIP_PORT;
+          if(!inhost) inhost = NTRIP_CASTER;
+	}
+	else if((inputmode == TCPSOCKET) || (inputmode == UDPSOCKET))
+	{
+          if(!inport) inport = SERV_TCP_PORT;
+          if(!inhost) inhost = SERV_HOST_ADDR;
+	}
+
+	if(!(he = gethostbyname(inhost)))
+	{
+          fprintf(stderr, "ERROR: Input host <%s> unknown\n", inhost);
+          usage(-2, argv[0]);
+	}
+
+	if((gpsfd = socket(AF_INET, inputmode == UDPSOCKET
+	? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
+	{
+          fprintf(stderr,
+          "ERROR: can't create socket for incoming data stream\n");
+          exit(1);
+	}
+
+	memset((char *) &caster, 0x00, sizeof(caster));
+	if(!bindmode)
+          memcpy(&caster.sin_addr, he->h_addr, (size_t)he->h_length);
+	caster.sin_family = AF_INET;
+	caster.sin_port = htons(inport);
+
+	fprintf(stderr, "%s input: host = %s, port = %d, %s%s%s%s%s\n",
+	inputmode == CASTER ? "caster" : inputmode == SISNET ? "sisnet" :
+	inputmode == TCPSOCKET ? "tcp socket" : "udp socket",
+	bindmode ? "127.0.0.1" : inet_ntoa(caster.sin_addr),
+	inport, stream_name ? "stream = " : "", stream_name ? stream_name : "",
+	initfile ? ", initfile = " : "", initfile ? initfile : "",
+	bindmode ? "binding mode" : "");
+
+	if(bindmode)
+	{
+          if(bind(gpsfd, (struct sockaddr *) &caster, sizeof(caster)) < 0)
+          {
+            fprintf(stderr, "ERROR: can't bind input to port %d\n", inport);
+            reconnect_sec_max = 0;
+            input_init = 0;
+            break;
+          }
+	} /* connect to input-caster or proxy server*/
+	else if(connect(gpsfd, (struct sockaddr *)&caster, sizeof(caster)) < 0)
+	{
+          fprintf(stderr, "WARNING: can't connect input to %s at port %d\n",
+          inet_ntoa(caster.sin_addr), inport);
+          input_init = 0;
+          break;
+	}
+
+	if(stream_name) /* input from Ntrip Version 1.0 caster*/
+	{
+          int init = 0;
+
+          /* set socket buffer size */
+          setsockopt(gpsfd, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
+            sizeof(const char *));
+          if(stream_user && stream_password)
+          {
+            /* leave some space for login */
+            nBufferBytes=snprintf(szSendBuffer, sizeof(szSendBuffer)-40,
+            "GET %s/%s HTTP/1.0\r\n"
+            "User-Agent: %s/%s\r\n"
+            "Authorization: Basic ", get_extension, stream_name,
+            AGENTSTRING, revisionstr);
+            /* second check for old glibc */
+            if(nBufferBytes > (int)sizeof(szSendBuffer)-40 || nBufferBytes < 0)
+            {
+              fprintf(stderr, "ERROR: Source caster request too long\n");
+              input_init = 0;
+              reconnect_sec_max =0;
+              break;
+            }
+            nBufferBytes += encode(szSendBuffer+nBufferBytes,
+              sizeof(szSendBuffer)-nBufferBytes-4, stream_user, stream_password);
+            if(nBufferBytes > (int)sizeof(szSendBuffer)-4)
+            {
+              fprintf(stderr,
+              "ERROR: Source caster user ID and/or password too long\n");
+              input_init = 0;
+              reconnect_sec_max =0;
+              break;
+            }              
+            szSendBuffer[nBufferBytes++] = '\r';
+            szSendBuffer[nBufferBytes++] = '\n';
+            szSendBuffer[nBufferBytes++] = '\r';
+            szSendBuffer[nBufferBytes++] = '\n';
+          }
+          else
+          {
+            nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+            "GET %s/%s HTTP/1.0\r\n"
+            "User-Agent: %s/%s\r\n"
+            "\r\n", get_extension, stream_name, AGENTSTRING, revisionstr);
+          }
+          if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
+          != nBufferBytes)
+          {
+            fprintf(stderr, "WARNING: could not send Source caster request\n");
+            input_init = 0;
+            break;
+          }
+          nBufferBytes = 0;
+          /* check Source caster's response */
+          while(!init && nBufferBytes < (int)sizeof(szSendBuffer)
+          && (nBufferBytes += recv(gpsfd, szSendBuffer,
+          sizeof(szSendBuffer)-nBufferBytes, 0)) > 0)
+          {
+            if(strstr(szSendBuffer, "\r\n"))
+            {              
+              if(strncmp(szSendBuffer, "ICY 200 OK", 10))
+              {
+                int k;
+                fprintf(stderr,
+                "ERROR: could not get requested data from Source caster: ");
+                for(k = 0; k < nBufferBytes && szSendBuffer[k] != '\n'
+                  && szSendBuffer[k] != '\r'; ++k)
+                {
+                  fprintf(stderr, "%c", isprint(szSendBuffer[k])
+                  ? szSendBuffer[k] : '.');
+        	}
+                fprintf(stderr, "\n");
+                if(strncmp(szSendBuffer, "SOURCETABLE 200 OK",18))
+                {
+                  reconnect_sec_max =0;
+                }
+                input_init = 0;
+                break;
+              }
+              else init = 1;
+            }
+          }
+	} /* end input from Ntrip Version 1.0 caster */
+
+	if(initfile && inputmode != SISNET)
+	{
+          char buffer[1024];
+          FILE *fh;
+          int i;
+
+          if((fh = fopen(initfile, "r")))
+          {
+            while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
+            {
+              if((send(gpsfd, buffer, (size_t)i, 0)) != i)
+              {
+        	perror("WARNING: sending init file");
+        	input_init = 0;
+        	break;
+              }
+            }
+            if(i < 0)
+            {
+              perror("ERROR: reading init file");
+              reconnect_sec_max = 0;
+              input_init = 0;
+              break;
+            }
+            fclose(fh);
+          }
+          else
+          {
+            fprintf(stderr, "ERROR: can't read init file <%s>\n", initfile);
+            reconnect_sec_max = 0;
+            input_init = 0;
+            break;
+          }
+	}
+      }
       if(inputmode == SISNET)
       {
-        if(!inhost) inhost = SISNET_SERVER;
-        if(!inport) inport = SISNET_PORT;
+	int i, j;
+	char buffer[1024];
+
+	i = snprintf(buffer, sizeof(buffer), sisnet >= 30 ? "AUTH,%s,%s\r\n"
+          : "AUTH,%s,%s", sisnetuser, sisnetpassword);
+	if((send(gpsfd, buffer, (size_t)i, 0)) != i)
+	{
+          perror("WARNING: sending authentication for SISNeT data server");
+          input_init = 0;
+          break;
+	}
+	i = sisnet >= 30 ? 7 : 5;
+	if((j = recv(gpsfd, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
+	{
+          fprintf(stderr, "WARNING: SISNeT connect failed:");
+          for(i = 0; i < j; ++i)
+          {
+            if(buffer[i] != '\r' && buffer[i] != '\n')
+            {
+              fprintf(stderr, "%c", isprint(buffer[i]) ? buffer[i] : '.');
+            }
+          }
+          fprintf(stderr, "\n");
+          input_init = 0;
+          break;
+	}
+	if(sisnet >= 31)
+	{
+          if((send(gpsfd, "START\r\n", 7, 0)) != i)
+          {
+            perror("WARNING: sending Sisnet start command");
+            input_init = 0;
+            break;
+          }
+	}
       }
-      else if(inputmode == CASTER)
+      /*** receiver authentication  ***/
+      if (recvrid && recvrpwd && ((inputmode == TCPSOCKET)
+      || (inputmode == UDPSOCKET)))
       {
-        if(!inport) inport = NTRIP_PORT;
-        if(!inhost) inhost = NTRIP_CASTER;
+	if (strlen(recvrid) > (BUFSZ-3))
+	{
+          fprintf(stderr, "ERROR: Receiver ID too long\n");
+          reconnect_sec_max = 0;
+          input_init = 0;
+          break;
+	}
+	else
+	{
+          fprintf(stderr, "Sending user ID for receiver...\n");
+          nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
+          strcpy(szSendBuffer, recvrid);
+          strcat(szSendBuffer,"\r\n");
+          if(send(gpsfd,szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
+          {
+            perror("WARNING: sending user ID for receiver");
+            input_init = 0;
+            break;
+          }
+	}
+
+	if (strlen(recvrpwd) > (BUFSZ-3))
+	{
+          fprintf(stderr, "ERROR: Receiver password too long\n"); 
+          reconnect_sec_max = 0;
+          input_init = 0;
+          break;
+	}
+	else
+	{
+          fprintf(stderr, "Sending user password for receiver...\n");
+          nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
+          strcpy(szSendBuffer, recvrpwd);
+          strcat(szSendBuffer,"\r\n");
+          if(send(gpsfd, szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
+          {
+            perror("WARNING: sending user password for receiver");
+            input_init = 0;
+            break;
+          }
+	}
       }
-      else if((inputmode == TCPSOCKET) || (inputmode == UDPSOCKET))
+      break;
+    default:
+      usage(-1, argv[0]);
+      break;
+    }
+    
+    /* ----- main part ----- */
+    int output_init = 1;
+
+    while((input_init) && (output_init))
+    {
+      if((sigint_received) || (sigalarm_received) || (sigpipe_received)) break;
+
+      if(!(he = gethostbyname(outhost)))
       {
-        if(!inport) inport = SERV_TCP_PORT;
-        if(!inhost) inhost = SERV_HOST_ADDR;
+	fprintf(stderr, "ERROR: Destination caster or proxy host <%s> unknown\n",
+	outhost);
+        close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
+	usage(-2, argv[0]);
       }
 
-      if(!(he = gethostbyname(inhost)))
+      /* create socket */
+      if((socket_tcp = socket(AF_INET, SOCK_STREAM, 0)) < 0)
       {
-        fprintf(stderr, "ERROR: Input host <%s> unknown\n", inhost);
-        usage(-2, argv[0]);
-      }
-
-      if((gpsfd = socket(AF_INET, inputmode == UDPSOCKET
-      ? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
-      {
-        fprintf(stderr,
-        "ERROR: can't create socket for incoming data stream\n");
-        exit(1);
+	perror("ERROR: tcp socket");
+        reconnect_sec_max = 0;
+        break;
       }
 
       memset((char *) &caster, 0x00, sizeof(caster));
-      if(!bindmode)
-        memcpy(&caster.sin_addr, he->h_addr, (size_t)he->h_length);
+      memcpy(&caster.sin_addr, he->h_addr, (size_t)he->h_length);
       caster.sin_family = AF_INET;
-      caster.sin_port = htons(inport);
+      caster.sin_port = htons(outport);
 
-      fprintf(stderr, "%s input: host = %s, port = %d, %s%s%s%s%s\n",
-      inputmode == CASTER ? "caster" : inputmode == SISNET ? "sisnet" :
-      inputmode == TCPSOCKET ? "tcp socket" : "udp socket",
-      bindmode ? "127.0.0.1" : inet_ntoa(caster.sin_addr),
-      inport, stream_name ? "stream = " : "", stream_name ? stream_name : "",
-      initfile ? ", initfile = " : "", initfile ? initfile : "",
-      bindmode ? "binding mode" : "");
+      /* connect to Destination caster or Proxy server*/
+      fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s"
+      ", mode = %s\n\n", inet_ntoa(caster.sin_addr), outport, mountpoint,
+      outputmode == NTRIP1 ? "ntrip1" : outputmode == HTTP ? "http" : "rtsp");
 
-      if(bindmode)
+      if(connect(socket_tcp, (struct sockaddr *) &caster, sizeof(caster)) < 0)
       {
-        if(bind(gpsfd, (struct sockaddr *) &caster, sizeof(caster)) < 0)
-        {
-          fprintf(stderr, "ERROR: can't bind input to port %d\n", inport);
-          exit(1);
-        }
-      } /* connect to input-caster or proxy server*/
-      else if(connect(gpsfd, (struct sockaddr *)&caster, sizeof(caster)) < 0)
-      {
-        fprintf(stderr, "ERROR: can't connect input to %s at port %d\n",
-        inet_ntoa(caster.sin_addr), inport);
-        exit(1);
-      }
-
-      if(stream_name) /* input from Ntrip Version 1.0 caster*/
-      {
-        int init = 0;
-
-        /* set socket buffer size */
-        setsockopt(gpsfd, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
-          sizeof(const char *));
-        if(stream_user && stream_password)
-        {
-          /* leave some space for login */
-          nBufferBytes=snprintf(szSendBuffer, sizeof(szSendBuffer)-40,
-          "GET %s/%s HTTP/1.0\r\n"
-          "User-Agent: %s/%s\r\n"
-          "Authorization: Basic ", get_extension, stream_name,
-          AGENTSTRING, revisionstr);
-          /* second check for old glibc */
-          if(nBufferBytes > (int)sizeof(szSendBuffer)-40 || nBufferBytes < 0)
-          {
-            fprintf(stderr, "ERROR: Source caster request too long\n");
-            exit(1);
-          }
-          nBufferBytes += encode(szSendBuffer+nBufferBytes,
-            sizeof(szSendBuffer)-nBufferBytes-4, stream_user, stream_password);
-          if(nBufferBytes > (int)sizeof(szSendBuffer)-4)
-          {
-            fprintf(stderr,
-            "ERROR: Source caster user ID and/or password too long\n");
-            exit(1);
-          }
-          szSendBuffer[nBufferBytes++] = '\r';
-          szSendBuffer[nBufferBytes++] = '\n';
-          szSendBuffer[nBufferBytes++] = '\r';
-          szSendBuffer[nBufferBytes++] = '\n';
-        }
-        else
-        {
-          nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-          "GET %s/%s HTTP/1.0\r\n"
-          "User-Agent: %s/%s\r\n"
-          "\r\n", get_extension, stream_name, AGENTSTRING, revisionstr);
-        }
-        if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
-        != nBufferBytes)
-        {
-          fprintf(stderr, "ERROR: could not send Source caster request\n");
-          exit(1);
-        }
-        nBufferBytes = 0;
-        /* check Source caster's response */
-        while(!init && nBufferBytes < (int)sizeof(szSendBuffer)
-        && (nBufferBytes += recv(gpsfd, szSendBuffer,
-        sizeof(szSendBuffer)-nBufferBytes, 0)) > 0)
-        {
-          if(strstr(szSendBuffer, "\r\n"))
-          {
-            if(!strncmp(szSendBuffer, "ICY 200 OK\r\n", 10))
-              init = 1;
-            else
-            {
-              int k;
-              fprintf(stderr,
-              "ERROR: could not get requested data from Source caster: ");
-              for(k = 0; k < nBufferBytes && szSendBuffer[k] != '\n'
-              && szSendBuffer[k] != '\r'; ++k)
-              {
-                fprintf(stderr, "%c", isprint(szSendBuffer[k])
-                ? szSendBuffer[k] : '.');
-              }
-              fprintf(stderr, "\n");
-              exit(1);
-            }
-          }
-        }
-        if(!init)
-        {
-          fprintf(stderr, "ERROR: could not init Source caster download\n");
-          exit(1);
-        }
-      } /* end input from Ntrip Version 1.0 caster */
-
-      if(initfile && inputmode != SISNET)
-      {
-        char buffer[1024];
-        FILE *fh;
-        int i;
-
-        if((fh = fopen(initfile, "r")))
-        {
-          while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
-          {
-            if((send(gpsfd, buffer, (size_t)i, 0)) != i)
-            {
-              perror("ERROR: sending init file");
-              exit(1);
-            }
-          }
-          if(i < 0)
-          {
-            perror("ERROR: reading init file");
-            exit(1);
-          }
-          fclose(fh);
-        }
-        else
-        {
-          fprintf(stderr, "ERROR: can't read init file <%s>\n", initfile);
-          exit(1);
-        }
-      }
-    }
-    if(inputmode == SISNET)
-    {
-      int i, j;
-      char buffer[1024];
-
-      i = snprintf(buffer, sizeof(buffer), sisnet >= 30 ? "AUTH,%s,%s\r\n"
-        : "AUTH,%s,%s", sisnetuser, sisnetpassword);
-      if((send(gpsfd, buffer, (size_t)i, 0)) != i)
-      {
-        perror("ERROR: sending authentication for SISNeT data server");
-        exit(1);
-      }
-      i = sisnet >= 30 ? 7 : 5;
-      if((j = recv(gpsfd, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
-      {
-        fprintf(stderr, "ERROR: SISNeT connect failed:");
-        for(i = 0; i < j; ++i)
-        {
-          if(buffer[i] != '\r' && buffer[i] != '\n')
-          {
-            fprintf(stderr, "%c", isprint(buffer[i]) ? buffer[i] : '.');
-          }
-        }
-        fprintf(stderr, "\n");
-        exit(1);
-      }
-      if(sisnet >= 31)
-      {
-        if((send(gpsfd, "START\r\n", 7, 0)) != i)
-        {
-          perror("ERROR: sending Sisnet start command");
-          exit(1);
-        }
-      }
-    }
-    /*** receiver authentication  ***/
-    if (recvrid && recvrpwd && ((inputmode == TCPSOCKET)
-    || (inputmode == UDPSOCKET)))
-    {
-      if (strlen(recvrid) > (BUFSZ-3))
-      {
-        fprintf(stderr, "ERROR: Receiver ID too long\n");
-        exit(0);
-      }
-      else
-      {
-        fprintf(stderr, "Sending user ID for receiver...\n");
-        nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
-        strcpy(szSendBuffer, recvrid);
-        strcat(szSendBuffer,"\r\n");
-        send(gpsfd,szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT);
-      }
-
-      if (strlen(recvrpwd) > (BUFSZ-3))
-      {
-        fprintf(stderr, "ERROR: Receiver password too long\n");
-        exit(0);
-      }
-      else
-      {
-        fprintf(stderr, "Sending user password for receiver...\n");
-        nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
-        strcpy(szSendBuffer, recvrpwd);
-        strcat(szSendBuffer,"\r\n");
-        send(gpsfd, szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT);
-      }
-    }
-    break;
-  default:
-    usage(-1, argv[0]);
-    break;
-  }
-
-  /* ----- main part ----- */
-  /* setup signal handler for CTRL+C */
-  setup_signal_handler(SIGINT,  handle_sigint);
-
-  while(outputmode != END)
-  {
-    if(signal_was_caught())
-    {
-      fprintf(stderr, "NtripLinuxServer terminates\n");
-      break;
-    }
-
-    if(!(he = gethostbyname(outhost)))
-    {
-      fprintf(stderr, "ERROR: Destination caster or proxy host <%s> unknown\n",
-      outhost);
-      usage(-2, argv[0]);
-    }
-
-    /* create socket */
-    if((socket_tcp = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-    {
-      perror("ERROR: tcp socket");
-      exit(2);
-    }
-
-    memset((char *) &caster, 0x00, sizeof(caster));
-    memcpy(&caster.sin_addr, he->h_addr, (size_t)he->h_length);
-    caster.sin_family = AF_INET;
-    caster.sin_port = htons(outport);
-
-    /* connect to Destination caster or Proxy server*/
-    fprintf(stderr, "caster output: host = %s, port = %d, mountpoint = %s"
-    ", mode = %s\n", inet_ntoa(caster.sin_addr), outport, mountpoint,
-    outputmode == NTRIPV1 ? "ntrip1" : outputmode == HTTP ? "http" : "rtsp");
-
-    if(connect(socket_tcp, (struct sockaddr *) &caster, sizeof(caster)) < 0)
-    {
-      fprintf(stderr, "ERROR: can't connect output to %s at port %d\n",
-        inet_ntoa(caster.sin_addr), outport);
-      if(close(socket_tcp)==-1) perror("ERROR: close tcp socket");
-      exit(3);
-    }
-
-    /*** OutputMode handling ***/
-    switch(outputmode){
-      case NTRIPV1: /*** OutputMode Ntrip Version 1.0 ***/
-        nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-          "SOURCE %s %s/%s\r\n"
-          "Source-Agent: %s\r\n\r\n",
-          password, post_extension, mountpoint, AGENTSTRING);
-        if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
-        {
-          fprintf(stderr, "ERROR: Destination caster request to long\n");
-          outputmode = END;
-          break;
-        }
-        if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
-        {
-          outputmode = END;
-          break;
-        }
-        /* check Destination caster's response */
-        nBufferBytes = recv(socket_tcp, szSendBuffer, sizeof(szSendBuffer), 0);
-        szSendBuffer[nBufferBytes] = '\0';
-        if(!strstr(szSendBuffer, "OK"))
-        {
-          char *a;
-          fprintf(stderr,
-          "ERROR: Destination caster's or Proxy's reply is not OK: ");
-          for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
-          {
-            fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
-          }
-          fprintf(stderr, "\n");
-          outputmode = END;
-          break;
-        }
-#ifndef NDEBUG
-        else
-        {
-          fprintf(stderr,
-          "Destination caster response:\n%s\nconnection successfull\n",
-          szSendBuffer);
-        }
-#endif
-        send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
+	fprintf(stderr, "WARNING: can't connect output to %s at port %d\n",
+          inet_ntoa(caster.sin_addr), outport);
         break;
-      case HTTP: /*** Ntrip-Version 2.0 HTTP/1.1 ***/
-        nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-          "POST %s/%s HTTP/1.1\r\n"
-          "Host: %s\r\n"
-          "Ntrip-Version: Ntrip/2.0\r\n"
-          "User-Agent: %s/%s\r\n"
-          "Authorization: Basic %s\r\n"
-          "Ntrip-STR: %s\r\n"
-          "Transfer-Encoding: chunked\r\n\r\n",
-          post_extension, mountpoint, casterouthost, AGENTSTRING,
-          revisionstr, authorization, ntrip_str);
-        if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
-        {
-          fprintf(stderr, "ERROR: Destination caster request to long\n");
-          outputmode = END;
-          break;
-        }
-        if (!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
-        {
-          outputmode = END;
-          break;
-        }
-        /* check Destination caster's response */
-        nBufferBytes = recv(socket_tcp, szSendBuffer, sizeof(szSendBuffer), 0);
-        szSendBuffer[nBufferBytes] = '\0';
-        if(!strstr(szSendBuffer, "HTTP/1.1 200 OK"))
-        {
-          char *a;
-          fprintf(stderr,
-          "ERROR: Destination caster's%s reply is not OK: ",
-          *proxyhost ? " or Proxy's" : "");
-          for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
+      }
+
+      /*** OutputMode handling ***/
+      switch(outputmode)
+      {
+	case NTRIP1: /*** OutputMode Ntrip Version 1.0 ***/
+          nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+            "SOURCE %s %s/%s\r\n"
+            "Source-Agent: %s/%s\r\n\r\n",
+            password, post_extension, mountpoint, AGENTSTRING, revisionstr);
+          if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
           {
-            fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
-          }
-          fprintf(stderr, "\n");
-          /* fallback if necessary */
-          if(!strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
-          {
-            fprintf(stderr,
-            " Ntrip Version 2.0 not implemented at Destination caster"
-            " <%s>%s%s%s\n%s\n"
-            "caster fallback: Fallback to Ntrip Version 1.0\n",
-            casterouthost,
-            *proxyhost ? " or Proxy <" : "", proxyhost, *proxyhost ? ">" : "",
-            *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "");
-            outputmode = NTRIPV1;
+            fprintf(stderr, "ERROR: Destination caster request to long\n");
+            reconnect_sec_max = 0;
+            output_init = 0;
             break;
           }
-          outputmode = END;
-          break;
-        }
-#ifndef NDEBUG
-        else
-        {
-          fprintf(stderr, "Destination caster response:\n%s\n"
-          "connection successfull\n",szSendBuffer);
-        }
-#endif
-        send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
-        break;
-      case RTSP: /*** Ntrip-Version 2.0 RTSP / RTP ***/
-        if((socket_udp = socket(AF_INET, SOCK_DGRAM,0)) < 0)
-        {
-          perror("ERROR: udp socket");
-          exit(4);
-        }
-        /* fill structure with local address information for UDP */
-        memset(&local, 0, sizeof(local));
-        local.sin_family = AF_INET;
-        local.sin_port = htons(0);
-        local.sin_addr.s_addr = htonl(INADDR_ANY);
-        len = (socklen_t)sizeof(local);
-        /* bind() in order to get a random RTP client_port */
-        if((bind(socket_udp,(struct sockaddr *)&local, len)) < 0)
-        {
-          perror("ERROR: udp bind");
-          if(close(socket_udp)==-1) perror("ERROR: close udp socket");
-          if(close(socket_tcp)==-1) perror("ERROR: close tcp socket");
-          exit(4);
-        }
-        if((getsockname(socket_udp, (struct sockaddr*)&local, &len)) != -1)
-        {
-          client_port = (unsigned int)ntohs(local.sin_port);
-        }else{
-          perror("ERROR: getsockname(localhost)");
-          if(close(socket_udp)==-1) perror("ERROR: close udp socket");
-          if(close(socket_tcp)==-1) perror("ERROR: close tcp socket");
-          exit(4);
-        }
-        nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-          "SETUP rtsp://%s%s/%s RTSP/1.0\r\n"
-          "CSeq: 1\r\n"
-          "Ntrip-Version: Ntrip/2.0\r\n"
-          "Ntrip-Component: Ntripserver\r\n"
-          "User-Agent: %s/%s\r\n"
-          "Transport: RTP/GNSS;unicast;client_port=%u\r\n"
-          "Authorization: Basic %s\r\n"
-          "Ntrip-STR: %s\r\n\r\n",
-          casterouthost, rtsp_extension, mountpoint, AGENTSTRING, revisionstr,
-          client_port, authorization, ntrip_str);
-        if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
-        {
-          fprintf(stderr, "ERROR: Destination caster request to long\n");
-          outputmode = END;
-          break;
-        }
-        if (!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
-        {
-          outputmode = END;
-          break;
-        }
-        while((nBufferBytes = recv(socket_tcp, szSendBuffer,
-        sizeof(szSendBuffer), 0)) > 0)
-        {
+          if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
+          {
+            output_init = 0;
+            break;
+          }
           /* check Destination caster's response */
+          nBufferBytes = recv(socket_tcp, szSendBuffer, sizeof(szSendBuffer), 0);
           szSendBuffer[nBufferBytes] = '\0';
-          if(!strstr(szSendBuffer, "RTSP/1.0 200 OK"))
+          if(!strstr(szSendBuffer, "OK"))
+          {
+            char *a;
+            fprintf(stderr,
+            "ERROR: Destination caster's or Proxy's reply is not OK: ");
+            for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
+            {
+              fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
+            }
+            fprintf(stderr, "\n");
+            if((strstr(szSendBuffer,"ERROR - Bad Password"))
+            || (strstr(szSendBuffer,"400 Bad Request")))           
+            reconnect_sec_max = 0;
+            output_init = 0;
+            break;
+          }
+#ifndef NDEBUG
+          else
+          {
+            fprintf(stderr, "Destination caster response:\n%s\n",
+            szSendBuffer);
+          }
+#endif
+          send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
+          break;
+	case HTTP: /*** Ntrip-Version 2.0 HTTP/1.1 ***/
+          nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+            "POST %s/%s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Ntrip-Version: Ntrip/2.0\r\n"
+            "User-Agent: %s/%s\r\n"
+            "Authorization: Basic %s\r\n"
+            "Ntrip-STR: %s\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n",
+            post_extension, mountpoint, casterouthost, AGENTSTRING,
+            revisionstr, authorization, ntrip_str);
+          if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
+          {
+            fprintf(stderr, "ERROR: Destination caster request to long\n");
+            reconnect_sec_max = 0;
+            output_init = 0;
+            break;
+          }
+          if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
+          {
+            output_init = 0;
+            break;
+          }
+          /* check Destination caster's response */
+          nBufferBytes = recv(socket_tcp, szSendBuffer, sizeof(szSendBuffer), 0);
+          szSendBuffer[nBufferBytes] = '\0';
+          if(!strstr(szSendBuffer, "HTTP/1.1 200 OK"))
           {
             char *a;
             fprintf(stderr,
@@ -957,42 +917,30 @@ int main(int argc, char **argv)
             *proxyhost ? " or Proxy's" : "");
             for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
             {
-              fprintf(stderr, "%c", isprint(*a) ? *a : '.');
+              fprintf(stderr, "%.1s", isprint(*a) ? a : ".");
             }
             fprintf(stderr, "\n");
             /* fallback if necessary */
-            if(strncmp(szSendBuffer, "RTSP",4) != 0)
+            if(!strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
             {
-              if(strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
-              {
-                fprintf(stderr,
-                " - RTSP not implemented at Destination caster <%s>%s%s%s\n\n"
-                "caster fallback: Fallback to Ntrip Version 2.0 in TCP/IP"
-                " mode\n\n", casterouthost,
-                *proxyhost ? " or Proxy <" :"", proxyhost, *proxyhost ? ">":"");
-                outputmode = HTTP;
-                break;
-              }
-              else
-              {
-                fprintf(stderr,
-                " Ntrip-Version 2.0 not implemented at Destination caster"
-                "<%s>%s%s%s\n%s"
-                " or RTSP/1.0 not implemented at Destination caster%s\n\n"
-                "caster fallback: Fallback to Ntrip Version 1.0\n",
-                casterouthost, *proxyhost ? " or Proxy <" :"", proxyhost,
-                *proxyhost ? ">":"",
-                *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "",
-                *proxyhost ? " or Proxy" :"");
-                outputmode = NTRIPV1;
-                break;
-              }
-            }
-            else
-            {
-              outputmode = END;
+              fprintf(stderr,
+              "       Ntrip Version 2.0 not implemented at Destination caster"
+              " <%s>%s%s%s\n%s\n"
+              "ntripserver falls back to Ntrip Version 1.0\n\n",
+              casterouthost,
+              *proxyhost ? " or Proxy <" : "", proxyhost, *proxyhost ? ">" : "",
+              *proxyhost ? "       or HTTP/1.1 not implemented at Proxy\n" : "");
+              close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+              outputmode = NTRIP1;
               break;
             }
+            else if((strstr(szSendBuffer,"HTTP/1.1 401 Unauthorized"))
+            || (strstr(szSendBuffer,"501 Not Implemented")))
+            {
+               reconnect_sec_max = 0;
+            }
+            output_init = 0;
+            break;
           }
 #ifndef NDEBUG
           else
@@ -1000,58 +948,189 @@ int main(int argc, char **argv)
             fprintf(stderr, "Destination caster response:\n%s\n",szSendBuffer);
           }
 #endif
-          if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n"))
-          && (strstr(szSendBuffer,"CSeq: 1\r\n")))
+          send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
+          break;
+	case RTSP: /*** Ntrip-Version 2.0 RTSP / RTP ***/
+          if((socket_udp = socket(AF_INET, SOCK_DGRAM,0)) < 0)
           {
-            for(token = strtok(szSendBuffer, dlim); token != NULL;
-            token = strtok(NULL, dlim))
+            perror("ERROR: udp socket");
+            exit(4);
+          }
+          /* fill structure with local address information for UDP */
+          memset(&local, 0, sizeof(local));
+          local.sin_family = AF_INET;
+          local.sin_port = htons(0);
+          local.sin_addr.s_addr = htonl(INADDR_ANY);
+          len = (socklen_t)sizeof(local);
+          /* bind() in order to get a random RTP client_port */
+          if((bind(socket_udp,(struct sockaddr *)&local, len)) < 0)
+          {
+            perror("ERROR: udp bind");
+            reconnect_sec_max = 0;
+            output_init = 0;
+            break;
+          }
+          if((getsockname(socket_udp, (struct sockaddr*)&local, &len)) != -1)
+          {
+            client_port = (unsigned int)ntohs(local.sin_port);
+          }
+          else
+          {
+            perror("ERROR: getsockname(localhost)");
+            reconnect_sec_max = 0;
+            output_init = 0;
+            break;
+          }
+          nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+            "SETUP rtsp://%s%s/%s RTSP/1.0\r\n"
+            "CSeq: 1\r\n"
+            "Ntrip-Version: Ntrip/2.0\r\n"
+            "Ntrip-Component: Ntripserver\r\n"
+            "User-Agent: %s/%s\r\n"
+            "Transport: RTP/GNSS;unicast;client_port=%u\r\n"
+            "Authorization: Basic %s\r\n"
+            "Ntrip-STR: %s\r\n\r\n",
+            casterouthost, rtsp_extension, mountpoint, AGENTSTRING, revisionstr,
+            client_port, authorization, ntrip_str);
+          if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
+          {
+            fprintf(stderr, "ERROR: Destination caster request to long\n");
+            reconnect_sec_max = 0;
+            output_init = 0;
+            break;
+          }
+          if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
+          {
+            output_init = 0;
+            break;
+          }
+          while((nBufferBytes = recv(socket_tcp, szSendBuffer,
+          sizeof(szSendBuffer), 0)) > 0)
+          {
+            /* check Destination caster's response */
+            szSendBuffer[nBufferBytes] = '\0';
+            if(!strstr(szSendBuffer, "RTSP/1.0 200 OK"))
             {
-              tok_buf[i] = token; i++;
-            }
-            session = atoi(tok_buf[6]);
-            server_port = atoi(tok_buf[10]);
-            nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-              "POST rtsp://%s%s/%s RTSP/1.0\r\n"
-              "CSeq: 2\r\n"
-              "Session: %d\r\n"
-              "\r\n",
-              casterouthost, rtsp_extension,  mountpoint,  session);
-            if((nBufferBytes >= (int)sizeof(szSendBuffer))
-            || (nBufferBytes < 0))
-            {
-              fprintf(stderr, "ERROR: Destination caster request to long\n");
-              outputmode = END;
+              char *a;
+              fprintf(stderr,
+              "ERROR: Destination caster's%s reply is not OK: ",
+              *proxyhost ? " or Proxy's" : "");
+              for(a = szSendBuffer; *a && *a != '\n' && *a != '\r'; ++a)
+              {
+        	fprintf(stderr, "%c", isprint(*a) ? *a : '.');
+              }
+              fprintf(stderr, "\n");
+              /* fallback if necessary */
+              if(strncmp(szSendBuffer, "RTSP",4) != 0)
+              {
+        	if(strstr(szSendBuffer,"Ntrip-Version: Ntrip/2.0\r\n"))
+        	{
+                  fprintf(stderr,
+                  "       RTSP not implemented at Destination caster <%s>%s%s%s\n\n"
+                  "ntripserver falls back to Ntrip Version 2.0 in TCP/IP"
+                  " mode\n\n", casterouthost,
+                  *proxyhost ? " or Proxy <" :"", proxyhost, *proxyhost ? ">":"");
+                  close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+                  outputmode = HTTP;
+                  break;
+        	}
+        	else
+        	{
+                  fprintf(stderr,
+                  "       Ntrip-Version 2.0 not implemented at Destination caster"
+                  "<%s>%s%s%s\n%s"
+                  "       or RTSP/1.0 not implemented at Destination caster%s\n\n"
+                  "ntripserver falls back to Ntrip Version 1.0\n\n",
+                  casterouthost, *proxyhost ? " or Proxy <" :"", proxyhost,
+                  *proxyhost ? ">":"",
+                  *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "",
+                  *proxyhost ? " or Proxy" :"");
+                  close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+                  outputmode = NTRIP1;
+                  break;
+        	}
+              }
+              else if((strstr(szSendBuffer, "RTSP/1.0 401 Unauthorized"))
+              || (strstr(szSendBuffer, "RTSP/1.0 501 Not Implemented")))
+              {
+                reconnect_sec_max = 0;
+              }
+              output_init = 0;
               break;
             }
-            if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
+#ifndef NDEBUG
+            else
             {
-               outputmode = END;
-               break;
+              fprintf(stderr, "Destination caster response:\n%s\n",szSendBuffer);
             }
-          }else if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n")) && (strstr(szSendBuffer,"CSeq: 2\r\n"))) {
-            /* fill structure with caster address information for UDP */
-            memset(&casterRTP, 0, sizeof(casterRTP));
-            casterRTP.sin_family = AF_INET;
-            casterRTP.sin_port   = htons(((uint16_t)server_port));
-            if((he = gethostbyname(outhost))== NULL) {
-              fprintf(stderr, "ERROR: Destination caster unknown\n");
-              if(close(socket_udp)==-1) perror("ERROR: close udp socket");
-              if(close(socket_tcp)==-1) perror("ERROR: close tcp socket");
-              exit(4);
-            }else{
-              memcpy((char *)&casterRTP.sin_addr.s_addr,
-              he->h_addr_list[0], (size_t)he->h_length);
+#endif
+            if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n"))
+            && (strstr(szSendBuffer,"CSeq: 1\r\n")))
+            {
+              for(token = strtok(szSendBuffer, dlim); token != NULL;
+              token = strtok(NULL, dlim))
+              {
+        	tok_buf[i] = token; i++;
+              }
+              session = atoi(tok_buf[6]);
+              server_port = atoi(tok_buf[10]);
+              nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
+        	"POST rtsp://%s%s/%s RTSP/1.0\r\n"
+        	"CSeq: 2\r\n"
+        	"Session: %d\r\n"
+        	"\r\n",
+        	casterouthost, rtsp_extension,  mountpoint,  session);
+              if((nBufferBytes >= (int)sizeof(szSendBuffer))
+              || (nBufferBytes < 0))
+              {
+        	fprintf(stderr, "ERROR: Destination caster request to long\n");
+                reconnect_sec_max = 0;
+                output_init = 0;
+        	break;
+              }
+              if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
+              {
+                 output_init = 0;
+        	 break;
+              }
             }
-            cseq = 2;
-            len = (socklen_t)sizeof(casterRTP);
-            send_receive_loop(socket_udp, gpsfd, outputmode, (struct sockaddr *)&casterRTP, (socklen_t)len);
-            break;
-          }else{break;}
-        }
-        break;
+            else if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n")) && (strstr(szSendBuffer,
+            "CSeq: 2\r\n"))) 
+            {
+              /* fill structure with caster address information for UDP */
+              memset(&casterRTP, 0, sizeof(casterRTP));
+              casterRTP.sin_family = AF_INET;
+              casterRTP.sin_port   = htons(((uint16_t)server_port));
+              if((he = gethostbyname(outhost))== NULL) 
+              {
+        	fprintf(stderr, "ERROR: Destination caster unknown\n");
+                reconnect_sec_max = 0;
+                output_init = 0;
+                break;
+              }
+              else
+              {
+        	memcpy((char *)&casterRTP.sin_addr.s_addr,
+        	he->h_addr_list[0], (size_t)he->h_length);
+              }
+              cseq = 2;
+              len = (socklen_t)sizeof(casterRTP);
+              send_receive_loop(socket_udp, gpsfd, outputmode, (struct sockaddr *)&casterRTP, 
+              (socklen_t)len);
+              break;
+            }
+            else{break;}
+          }
+          break;
+      }     
     }
+    close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
+    if((!sigint_received) && (reconnect_sec_max))
+    {
+       reconnect_sec = reconnect(reconnect_sec, reconnect_sec_max);
+    }
+    else inputmode = LAST;
   }
-  close_session(socket_udp, socket_tcp, casterouthost, mountpoint, cseq, session, rtsp_extension, gpsfd);
   return 0;
 }
 
@@ -1075,18 +1154,16 @@ socklen_t length)
 
   /* data transmission */
   fprintf(stderr,"transfering data ...\n");
-
+  int send_recv_success = 0;
   while(1)
   {
-    /* signal handling*/
-    if(signal_was_caught())
-    {
-      fprintf(stderr, "NtripLinuxServer exits send-receive mode\n");
-      break;
-    }
+    if(send_recv_success < 3) send_recv_success++;  
     if(!nodata) alarm(ALARMTIME);
-    else nodata = 0;
+    else nodata = 0; 
 
+    /* signal handling*/
+    if((sigint_received) || (sigpipe_received) || (sigalarm_received)) break;
+    
     if(!nBufferBytes)
     {
       if(inputmode == SISNET && sisnet <= 30)
@@ -1100,8 +1177,8 @@ socklen_t length)
         i = (sisnet >= 30 ? 5 : 3);
         if((send(gpsfd, "MSG\r\n", i, 0)) != i)
         {
-          perror("ERROR: sending SISNeT data request");
-          exit(1);
+          perror("WARNING: sending SISNeT data request failed");
+          return;
         }
       }
       /*** receiving data ****/
@@ -1113,10 +1190,10 @@ socklen_t length)
         nodata = 1;
         continue;
       }
-      else if(nBufferBytes < 0)
+      else if((nBufferBytes < 0) && (!sigint_received))
       {
-        perror("ERROR: reading input failed");
-        exit(1);
+        perror("WARNING: reading input failed");
+        return;
       }
       /* we can compare the whole buffer, as the additional bytes
          remain unchanged */
@@ -1127,7 +1204,7 @@ socklen_t length)
       }
     }
     /**  send data ***/
-    if((nBufferBytes)  && (outmode == NTRIPV1)) /*** Ntrip-Version 1.0 ***/
+    if((nBufferBytes)  && (outmode == NTRIP1)) /*** Ntrip-Version 1.0 ***/
     {
       int i;
       if((i = send(sock, buffer, (size_t)nBufferBytes, MSG_DONTWAIT))
@@ -1137,10 +1214,7 @@ socklen_t length)
         {
           if(errno != EAGAIN)
           {
-            perror("WARNING: could not send data to Destination caster"
-            " - retry connection");
-            close(sock);
-            sleep(5);
+            perror("WARNING: could not send data to Destination caster");
             return;
           }
         }
@@ -1168,10 +1242,7 @@ socklen_t length)
         {
           if(errno != EAGAIN)
           {
-            perror("WARNING: could not send data to Destination caster"
-            " - retry connection");
-            close(sock);
-            sleep(5);
+            perror("WARNING: could not send data to Destination caster");
             return;
           }
         }
@@ -1194,12 +1265,6 @@ socklen_t length)
     {
       char rtpbuffer[BUFSZ+12];
       int i, j;
-      /* Signal Handling */
-      if(signal_was_caught())
-      {
-        fprintf(stderr, "NtripLinuxServer exits send-receive mode\n");
-        break;
-      }
       gettimeofday(&now, NULL);
       /* RTP data packet generation*/
       if(isfirstpacket){
@@ -1241,9 +1306,7 @@ socklen_t length)
         {
           if(errno != EAGAIN)
           {
-            perror("WARNING: could not send data to Destination caster - retry connection");
-            close(sock);
-            sleep(5);
+            perror("WARNING: could not send data to Destination caster");
             return;
           }
         }
@@ -1258,6 +1321,7 @@ socklen_t length)
         nBufferBytes = 0;
       }
     }
+    if(send_recv_success == 3) reconnect_sec = 1;
   }
   return;
 }
@@ -1421,7 +1485,10 @@ void usage(int rc, char *name)
   fprintf(stderr, "                         running the program in a proxy server protected LAN,\n");
   fprintf(stderr, "                         optional\n");
   fprintf(stderr, "    -F <ProxyPort>       Proxy server IP port, required i.e. when running\n");
-  fprintf(stderr, "                         the program in a proxy server protected LAN, optional\n\n");
+  fprintf(stderr, "                         the program in a proxy server protected LAN, optional\n");
+  fprintf(stderr, "    -R <maxDelay>        Reconnect mechanism with maximum delay between reconnect\n");
+  fprintf(stderr, "                         attemts in seconds, default: no reconnect activated,\n");
+  fprintf(stderr, "                         optional\n\n");
   fprintf(stderr, "    -M <InputMode> Sets the input mode (1 = Serial Port, 2 = IP server,\n");
   fprintf(stderr, "       3 = File, 4 = SISNeT Data Server, 5 = UDP server, 6 = NTRIP Caster),\n");
   fprintf(stderr, "       mandatory\n\n");
@@ -1463,12 +1530,13 @@ void usage(int rc, char *name)
   fprintf(stderr, "       -W <SourcePass>   Source caster password for input stream access, mandatory\n");
   fprintf(stderr, "                         for protected streams if <InputMode> = 6\n\n");
   fprintf(stderr, "    -O <OutputMode> Sets output mode for communatation with destination caster\n");
-  fprintf(stderr, "       0 = h = http: Ntrip Version 2.0 Caster in TCP/IP mode\n");
-  fprintf(stderr, "       1 = r = rtsp: NTRIP Version 2.0 Caster in RTSP/RTP mode\n");
-  fprintf(stderr, "       2 = n = ntrip1: NTRIP Version 1.0 Caster\n\n");
-  fprintf(stderr, "       Defaults to NTRIP1.0, but wil change to 2.0 in future versions\n");
-  fprintf(stderr, "       Note that the program automatically falls back from mode r to mode t and\n");
-  fprintf(stderr, "       further to mode f if necessary.\n\n");
+  fprintf(stderr, "       1 = http: NTRIP Version 2.0 Caster in TCP/IP mode\n");
+  fprintf(stderr, "       2 = rtsp: NTRIP Version 2.0 Caster in RTSP/RTP mode\n");
+  fprintf(stderr, "       3 = ntrip1: NTRIP Version 1.0 Caster\n");
+  fprintf(stderr, "       optional\n\n");
+  fprintf(stderr, "       Defaults to NTRIP1.0, but will change to 2.0 in future versions\n");
+  fprintf(stderr, "       Note that the program automatically falls back from mode rtsp to mode http and\n");
+  fprintf(stderr, "       further to mode ntrip1 if necessary.\n\n");
   fprintf(stderr, "       -a <DestHost>     Destination caster name or address, default: 127.0.0.1,\n");
   fprintf(stderr, "                         mandatory\n");
   fprintf(stderr, "       -p <DestPort>     Destination caster port, default: 2101, mandatory\n");
@@ -1480,7 +1548,7 @@ void usage(int rc, char *name)
   fprintf(stderr, "       -c <DestPass>     Destination caster password for stream upload to\n");
   fprintf(stderr, "                         mountpoint, mandatory\n");
   fprintf(stderr, "       -N <STR-record>   Sourcetable STR-record\n");
-  fprintf(stderr, "                         optional for Ntrip Version 2.0 in RTSP/RTP and TCP/IP mode\n\n");
+  fprintf(stderr, "                         optional for NTRIP Version 2.0 in RTSP/RTP and TCP/IP mode\n\n");
   exit(rc);
 } /* usage */
 
@@ -1493,7 +1561,27 @@ static void handle_sigint(int sig __attribute__((__unused__)))
 #else /* __GNUC__ */
 static void handle_sigint(int sig)
 #endif /* __GNUC__ */
-{sigint_received  = 1;}
+{
+  sigint_received  = 1;
+  fprintf(stderr, "WARNING: SIGINT received - ntripserver terminates\n");
+}
+
+#ifdef __GNUC__
+static void handle_alarm(int sig __attribute__((__unused__)))
+#else /* __GNUC__ */
+static void handle_alarm(int sig)
+#endif /* __GNUC__ */
+{
+  sigalarm_received = 1;
+  fprintf(stderr, "ERROR: more than %d seconds no activity\n", ALARMTIME);
+}
+
+#ifdef __GNUC__
+static void handle_sigpipe(int sig __attribute__((__unused__)))
+#else /* __GNUC__ */
+static void handle_sigpipe(int sig)
+#endif /* __GNUC__ */
+{sigpipe_received = 1;}
 
 static void setup_signal_handler(int sig, void (*handler)(int))
 {
@@ -1510,15 +1598,6 @@ static void setup_signal_handler(int sig, void (*handler)(int))
 #endif
   return;
 } /* setupsignal_handler */
-
-static int signal_was_caught(void)
-{
-  fflush(stdout);
-  if(sigint_received)
-    fprintf(stderr, "SIGINT received: ");
-
-  return (sigint_received);
-} /* signal_was_caught */
 
 /********************************************************************
  * base64-encoding                                                  *
@@ -1583,7 +1662,7 @@ static int send_to_caster(char *input, int socket, int input_size)
 
   if((send(socket, input, (size_t)input_size, 0)) != input_size)
   {
-    fprintf(stderr, "ERROR: could not send full header to Destination caster\n");
+    fprintf(stderr, "WARNING: could not send full header to Destination caster\n");
     send_error = 0;
   }
 #ifndef NDEBUG
@@ -1598,31 +1677,46 @@ static int send_to_caster(char *input, int socket, int input_size)
 
 
 /********************************************************************
+ * reconnect                                                        *
+*********************************************************************/
+int reconnect(int rec_sec, int rec_sec_max)
+{
+  fprintf(stderr,"reconnect in <%d> seconds\n\n", rec_sec);
+  rec_sec *= 2;
+  if (rec_sec > rec_sec_max) rec_sec = rec_sec_max;
+  sleep(rec_sec);
+  sigalarm_received = 0;
+  sigpipe_received = 0;
+  return rec_sec;
+} /* reconnect */
+
+
+/********************************************************************
  * close session                                                    *
 *********************************************************************/
-static void close_session(int sock_udp, int sock_tcp,
-const char *caster_addr, const char *mountpoint, int cseq,
-int session, char *rtsp_ext, int in_fd)
+static void close_session(const char *caster_addr, const char *mountpoint, 
+int cseq, int session, char *rtsp_ext, int fallback)
 {
   int  size_send_buf;
   char send_buf[BUFSZ];
 
-  if(in_fd)
+  if((gpsfd != -1) && (!fallback))
   {
-    if(close(in_fd)==-1)
+    if(close(gpsfd) == -1)
     {
       perror("ERROR: close input device ");
       exit(0);
     }
-#ifndef NDEBUG
     else
     {
-      fprintf(stderr, "\nclose input device: successful\n");
-    }
+      gpsfd = -1;
+#ifndef NDEBUG  
+    fprintf(stderr, "close input device: successful\n");
 #endif
+    }
   }
 
-  if(sock_udp  != 0)
+  if(socket_udp  != -1)
   {
     if(cseq == 2)
     {
@@ -1637,35 +1731,40 @@ int session, char *rtsp_ext, int in_fd)
         fprintf(stderr, "ERROR: Destination caster request to long\n");
         exit(0);
       }
-      send_to_caster(send_buf, sock_tcp, size_send_buf); strcpy(send_buf,"");
-      size_send_buf = recv(sock_tcp, send_buf, sizeof(send_buf), 0);
+      send_to_caster(send_buf, socket_tcp, size_send_buf); strcpy(send_buf,"");
+      size_send_buf = recv(socket_tcp, send_buf, sizeof(send_buf), 0);
       send_buf[size_send_buf] = '\0';
 #ifndef NDEBUG
       fprintf(stderr, "Destination caster response:\n%s", send_buf);
 #endif
     }
-    if(close(sock_udp)==-1)
+    if(close(socket_udp)==-1)
     {
       perror("ERROR: close udp socket");
       exit(0);
     }
-#ifndef NDEBUG
     else
     {
-      fprintf(stderr, "close udp socket:   successful\n");
-    }
+      socket_udp = -1;
+#ifndef NDEBUG
+      fprintf(stderr, "close udp socket: successful\n");
 #endif
+    }
   }
 
-  if(close(sock_tcp)==-1)
+  if(socket_tcp != -1)
   {
-    perror("ERROR: close tcp socket");
-    exit(0);
-  }
+    if(close(socket_tcp) == -1)
+    {
+      perror("ERROR: close tcp socket");
+      exit(0);
+    }
+    else
+    {
+      socket_tcp = -1;
 #ifndef NDEBUG
-  else
-  {
-    fprintf(stderr, "close tcp socket:   successful\n\n");
-  }
+      fprintf(stderr, "close tcp socket: successful\n");
 #endif
+    }
+  }
 } /* close_session */
