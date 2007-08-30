@@ -1,13 +1,15 @@
-#!/bin/make
+#!/usr/bin/make
+# $Id$
 
-ntripserver: NtripLinuxServer.c
+ntripserver: ntripserver.c
 	$(CC) -Wall -W -O3 $? -DNDEBUG -o $@
 
-debug: NtripLinuxServer.c
+debug: ntripserver.c
 	$(CC) -Wall -W -O3 $? -o ntripserver
 
 clean:
 	$(RM) -f ntripserver core
 
 archive:
-	zip ntripserver.zip -9 NTRIP2.txt makefile NtripLinuxServer.c NtripProvider.doc ReadmeServerLinux.txt SiteLogExample.txt SiteLogInstr.txt StartNtripServerLinux
+	tar -xzf ntripserver.tgz -9 makefile ntripserver.c NtripProvider.doc \
+        README SiteLogExample.txt SiteLogInstr.txt startntripserver.sh
