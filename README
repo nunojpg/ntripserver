@@ -39,7 +39,7 @@ acting as HTTP clients.
 ntripserver
 -----------
 The program ntripserver is designed to provide real-time data
-from a single NTRIP source running under a Linux operating system.
+from a single NTRIP source running under a POSIX operating system.
 
 Basically the ntripserver grabs a GNSS byte stream (Input, Source)
 from either
