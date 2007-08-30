@@ -1,143 +1,182 @@
 ----------------------------------------------------------------------
-                        Ntrip Server Linux
+                          ntripserver
 ----------------------------------------------------------------------
 
 (c) German Federal Agency for Cartography and Geodesy (BKG), 2002-2007
 
 
-Files in NtripServerLinux.zip
------------------------------
-ReadmeServerLinux.txt: Readme file for NtripServerLinux
-NtripServerLinux.tar: NtripServerLinux program tar archive
-NtripProvider.doc: Server password/mountpoit request form
-SiteLogExample.txt: Example Station Logfile
-SiteLogInstr.txt: Station Logfile Instructions
+Files in ntripserver.tgz
+------------------------
+- ntripserver.tar: ntripserver program tar archive
+- makefile: preconfigured makefile for convenient installation
+- ntripserver.c: c source file
+- README: Readme file for the ntripserver program
+- startntripserver.sh: shell script to start the ntripserver program
 
-Ntrip
+
+NTRIP
 -----
-NtripServerLinux is a HTTP client based on "Networked Transport of 
-RTCM via Internet Protocol" (Ntrip). This is an application-level 
-protocol streaming Global Navigation Satellite System (GNSS) data over 
-the Internet. Ntrip is a generic, stateless protocol based on the 
-Hypertext Transfer Protocol HTTP/1.1. The HTTP objects are enhanced 
-to GNSS data streams.
+The ntripserver is a HTTP client based on "Networked Transport of 
+RTCM via Internet Protocol" (NTRIP). This is an application-level 
+protocol streaming Global Navigation Satellite System (GNSS) data 
+over the Internet. NTRIP is a generic, stateless protocol based on 
+the Hypertext Transfer Protocol HTTP/1.1. The HTTP objects are 
+enhanced to GNSS data streams.
 
-Ntrip is designed for disseminating differential correction data 
+NTRIP is designed for disseminating differential correction data 
 (e.g in the RTCM-104 format) or other kinds of GNSS streaming data to
 stationary or mobile users over the Internet, allowing simultaneous
-PC, Laptop, PDA, or receiver connections to a broadcasting host. Ntrip
+PC, Laptop, PDA, or receiver connections to a broadcasting host. NTRIP
 supports wireless Internet access through Mobile IP Networks like GSM,
 GPRS, EDGE, or UMTS.
 
-Ntrip is implemented in three system software components:
-NtripClients, NtripServers and NtripCasters. The NtripCaster is the
-actual HTTP server program whereas NtripClient and NtripServer are
+NTRIP is implemented in three system software components:
+NTRIP clients, NTRIP servers and NTRIP casters. The NTRIP caster is the
+actual HTTP server program whereas NTRIP client and NTRIP server are
 acting as HTTP clients.
 
-NtripServerLinux
-----------------
-The program NtripServerLinux is designed to provide real-time data
-from a single NtripSource running under a Linux operating system.
-Basically the NtripServerLinux grabs a GNSS byte stream
-from a serial port or tcpsocket port and sends it off over an
-Internet TCP connection to the NtripCaster.
 
-Mind that the NtripServerLinux may not be able to handle your
-proxyserver. When using it in a proxy-protected Local Area Network
-(LAN), a TCP-relay may have to be established connecting the
-proxyserver and the NtripCaster. Establishing the Internet
-connection for an NtripServerLinux by using an Internet Service
-Provider (ISP) is an alternative. 
+ntripserver
+-----------
+The program ntripserver is designed to provide real-time data
+from a single NTRIP source running under a Linux operating system.
+
+Basically the ntripserver grabs a GNSS byte stream (Input, Source)
+from either
+
+1. a Serial port, or
+2. an IP server, or
+3. a File, or
+4. a SISNeT Data Server, or
+5. a UDP server, or
+6. an NTRIP Version 1.0 Caster
+
+and forwards that incoming stream to either
+
+1. an NTRIP Version 2.0 Caster via TCP/IP (Output, Destination), or
+2. an NTRIP Version 2.0 Caster via RTSP/RTP (Output, Destination), or
+3. an NTRIP Version 1.0 Caster.
+
+Please note, the options to support NTRIP Version 2.0 are currently still 
+under development and should be used with care. Keep in mind that details
+of the NTRIP Version 2.0 transport protocol are still under discussion
+and may be changed.
+
 
 Installation
 ------------
-To install the program 
-- unzip file NtripServerLinux.zip
-- run tar -xf NtripServerLinux.tar
-- change directory to NtripServerLinux
-- run make
-The exacutable will show up as NtripServerLinux.
+To install the program run
+
+- gunzip ntripserver.tgz
+- tar -xf ntripserver.tar
+- make, or 
+- make debug (for debugging purposes).
+
+The exacutable will show up as ntripserver.
+
 
 Usage
 -----
 The user may call the program with the following options:
 
-    -a DestinationCaster name or address (default: www.euref-ip.net)
-    -p DestinationCaster port (default: 80)
-    -m DestinationCaster mountpoint
-    -c DestinationCaster password
-    -h|? print this help screen
-    -M <mode>  sets the input mode
-               (1=serial, 2=tcpsocket, 3=file, 4=sisnet, 5=udpsocket, 6=caster)
-  Mode = file:
-    -s file, simulate data stream by reading log file
-       default/current setting is /dev/stdin
-  Mode = serial:
-    -b baud_rate, sets serial input baud rate
-       default/current value is 19200
-    -i input_device, sets name of serial input device
-       default/current value is /dev/gps
-       (normally a symbolic link to /dev/tty??)
-  Mode = tcpsocket or udpsocket:
-    -P receiver port (default: 1025)
-    -H hostname of TCP server (default: 127.0.0.1)
-    -f initfile send to server
-    -x receiver id
-    -y receiver password
-    -B bindmode: bind to incoming UDP stream
-  Mode = sisnet:
-    -P receiver port (default: 7777)
-    -H hostname of TCP server (default: 131.176.49.142)
-    -u username
-    -l password
-    -V version [2.1 or 3.1] (default: 2.1)
-  Mode = caster:
-    -P SourceCaster port (default: 80)
-    -H SourceCaster hostname (default: www.euref-ip.net)
-    -D SourceCaster mountpoint
-    -U SourceCaster username
-    -W SourceCaster password
+-h|? print this help screen
 
-There are additional options to support NTRIP version 2.0. These are currently
-still under development and should be used with care.
+-E <ProxyHost>   Proxy server host name or address, required i.e. when
+                 running the program in a proxy server protected LAN,
+                 optional
+-F <ProxyPort>   Proxy server IP port, required i.e. when running
+                 the program in a proxy server protected LAN, optional
+-R <maxDelay>    Reconnect mechanism with maximum delay between reconnect
+                 attemts in seconds, default: no reconnect activated,
+                 optional
 
-Example:
-NtripServerLinux -a www.euref-ip.net -p 2101 -m mountpoint -c password -M 1 -b 19200 -i /dev/ttyS0
+-M <InputMode> Sets the input mode (1 = Serial Port, 2 = IP server,
+   3 = File, 4 = SISNeT Data Server, 5 = UDP server, 6 = NTRIP Caster),
+   mandatory
 
-It is recommended to start NtripServerLinux through shell script
-StartNtripServerLinux. This shell script ensures that
-NtripServerLinux reconnects to the NtripCaster after a broken
-connection.
+   <InputMode> = 1 (Serial Port):
+   -i <Device>      Serial input device, default: /dev/gps, mandatory if
+                    <InputMode>=1
+   -b <BaudRate>    Serial input baud rate, default: 19200 bps, mandatory
+                    if <InputMode>=1
 
-NtripCaster IP address
-----------------------
-The current Internet address of the Ntrip Broadcaster which has to be
-introduced in the NtripServerLinux is "www.euref-ip.net". The port
-number is "80" or "2101".
+   <InputMode> = 2|5 (IP port | UDP port):
+   -H <ServerHost>  Input host name or address, default: 127.0.0.1,
+                    mandatory if <InputMode> = 2|5
+   -P <ServerPort>  Input port, default: 1025, mandatory if <InputMode>= 2|5
+   -f <ServerFile>  Name of initialization file to be send to server,
+                    optional
+   -x <ServerUser>  User ID to access incoming stream, optional
+   -y <ServerPass>  Password, to access incoming stream, optional
+   -B               Bind to incoming UDP stream, optional for <InputMode> = 5
 
-Server password and mountpoint
-------------------------------
-Feeding data streams into the Ntrip system using the
-NtripServerLinux program needs a server password and one mountpoint
-per stream. Currently this is available from
-euref-ip@bkg.bund.de (see "NtripProvider.doc").
+   <InputMode> = 3 (File):
+   -s <File>        File name to simulate stream by reading data from (log)
+                    file, default is /dev/stdin, mandatory for <InputMode> = 3
 
-Station Logfile
----------------
-A user of your data stream may need detailed information about the
-GNSS hardware and firmware that generates your signal. This
-information will be made available through a station logfile. Please
-find an example station logfile in "SiteLogExample.txt". Create a
-similar logfile describing your GNSS receiver hardware and firmware
-and include the requested information as far as it is available for
-you. Note that the form of this document follows an IGS
-recommendatation that can be downloaded from
-ftp://igscb.jpl.nasa.gov/pub/station/general/sitelog_instr.txt
-The content of your station logfile has to be kept up to date.
-Thus, please inform the NtripCaster operator about all changes at
-your station by sending an updates version of your station logfile.
-Providing a station logfile is not necessary in case you generate
-a Virtual Reference Station (VRS) data stream.
+   <InputMode> = 4 (SISNeT Data Server):
+   -H <SisnetHost>  SISNeT Data Server name or address,
+                    default: 131.176.49.142, mandatory if <InputMode> = 4
+   -P <SisnetPort>  SISNeT Data Server port, default: 7777, mandatory if
+                    <InputMode> = 4
+   -u <SisnetUser>  SISNeT Data Server user ID, mandatory if <InputMode> = 4
+   -l <SisnetPass>  SISNeT Data Server password, mandatory if <InputMode> = 4
+   -V <SisnetVers>  SISNeT Data Server Version number, options are 2.1, 3.0
+                    or 3.1, default: 3.1, mandatory if <InputMode> = 4
+
+   <InputMode> = 6 (NTRIP Version 1.0 Caster):
+   -H <SourceHost>  Source caster name or address, default: 127.0.0.1,
+                    mandatory if <InputMode> = 6
+   -P <SourcePort>  Source caster port, default: 2101, mandatory if
+                    <InputMode> = 6
+   -D <SourceMount> Source caster mountpoint for stream input, mandatory if
+                    <InputMode> = 6
+   -U <SourceUser>  Source caster user Id for input stream access, mandatory
+                    for protected streams if <InputMode> = 6
+   -W <SourcePass>  Source caster password for input stream access, mandatory
+                    for protected streams if <InputMode> = 6
+
+-O <OutputMode> Sets output mode for communatation with destination caster, optional
+   1 = http:   NTRIP Version 2.0 Caster in TCP/IP mode
+   2 = rtsp:   NTRIP Version 2.0 Caster in RTSP/RTP mode
+   3 = ntrip1: NTRIP Version 1.0 Caster
+
+   Defaults to NTRIP Version 1.0, but will change to 2.0 in future versions
+   Note that the program automatically falls back from mode rtsp to mode http and
+   further to mode ntrip1 if necessary.
+
+   -a <DestHost>    Destination caster name or address, default: 127.0.0.1,
+                    mandatory
+   -p <DestPort>    Destination caster port, default: 2101, mandatory
+   -m <DestMount>   Destination caster mountpoint for stream upload,
+                    mandatory
+   -n <DestUser>    Destination caster user ID for stream upload to
+                    mountpoint, only for NTRIP Version 2.0 destination
+                    casters, mandatory
+   -c <DestPass>    Destination caster password for stream upload to
+                    mountpoint, mandatory
+   -N <STR-record>  Sourcetable STR-record
+                    optional for NTRIP Version 2.0 in RTSP/RTP and TCP/IP mode 
+
+
+Example1: Reading from serial port and forward to NTRIP Version 1.0 Caster:
+
+./ntripserver -M 1 -i /dev/ttys0 -b 9600 -O 2 -a www.euref-ip.net -p 2101 -m Mount2 
+              -n serverID -c serverPass
+
+Example2: Reading from NTRIP Version 1.0 Caster and forward to NTRIP Version 2.0
+
+./ntripserver -M 6 -H www.euref-ip.net -P 2101 -D Mount1 -U clientID -W clientPass
+              -O 1 -a www.goenet-ip.fi -p 2101 -m Mount2 -n serverID -c serverPass
+
+
+NTRIP Caster password and mountpoint
+------------------------------------
+Feeding data streams into the NTRIP system using the ntripserver 
+program needs a password (and a user ID for NTRIP Version 2.0)
+and one mountpoint per stream.
+For the NTRIP Broadcasters EUREF-IP or IGS-IP this is currently 
+available from http://igs.bkg.bund.de/index_ntrip_prov.htm 
 
 
 Disclaimer
@@ -146,10 +185,10 @@ Note that this example server implementation is currently an
 experimental software. The BKG disclaims any liability nor
 responsibility to any person or entity with respect to any loss or
 damage caused, or alleged to be caused, directly or indirectly by the
-use and application of the Ntrip technology.
+use and application of the NTRIP technology.
+
 
 Further information
 -------------------
-http://igs.bkg.bund.de/index_ntrip.htm
-euref-ip@bkg.bund.de
-
+URL:    http://igs.bkg.bund.de/index_ntrip.htm
+E-mail: euref-ip@bkg.bund.de
