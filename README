@@ -19,9 +19,20 @@ NTRIP
 The ntripserver is a HTTP client based on "Networked Transport of 
 RTCM via Internet Protocol" (NTRIP). This is an application-level 
 protocol streaming Global Navigation Satellite System (GNSS) data 
-over the Internet. NTRIP is a generic, stateless protocol based on 
-the Hypertext Transfer Protocol HTTP/1.1. The HTTP objects are 
+over the Internet. 
+NTRIP Version 1.0 is a generic, stateless protocol based on the 
+Hypertext Transfer Protocol HTTP/1.1. The HTTP objects are 
 enhanced to GNSS data streams.
+
+The primary motivation for NTRIP Version 2.0 is to develop a fully
+HTTP-compatible Internet protocol standard that would work with proxy
+servers and to add an optional data transport via UDP. Hence, one
+NTRIP Version 2.0 transport approach is still based on HTTP1.1 on top
+of TCP. The second NTRIP Version 2.0 transport approach is based on
+both, the Internet Standard Protocol RTSP (Real Time Streaming Protocol)
+for stream control on top of TCP and the Internet Standard Protocol RTP
+(Real Time Transport Protocol) for data transport on top of
+connectionless UDP.
 
 NTRIP is designed for disseminating differential correction data 
 (e.g in the RTCM-104 format) or other kinds of GNSS streaming data to
