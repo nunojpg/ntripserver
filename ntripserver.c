@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.34 2007/08/30 14:52:43 stuerze Exp $
+ * $Id: ntripserver.c,v 1.35 2007/08/30 16:40:51 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.34 $";
-static char datestr[]     = "$Date: 2007/08/30 14:52:43 $";
+static char revisionstr[] = "$Revision: 1.35 $";
+static char datestr[]     = "$Date: 2007/08/30 16:40:51 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -599,6 +599,7 @@ int main(int argc, char **argv)
             nBufferBytes=snprintf(szSendBuffer, sizeof(szSendBuffer)-40,
             "GET %s/%s HTTP/1.0\r\n"
             "User-Agent: %s/%s\r\n"
+            "Connection: close\r\n"
             "Authorization: Basic ", get_extension, stream_name,
             AGENTSTRING, revisionstr);
             /* second check for old glibc */
@@ -629,6 +630,7 @@ int main(int argc, char **argv)
             nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
             "GET %s/%s HTTP/1.0\r\n"
             "User-Agent: %s/%s\r\n"
+            "Connection: close\r\n"
             "\r\n", get_extension, stream_name, AGENTSTRING, revisionstr);
           }
           if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
@@ -891,6 +893,7 @@ int main(int argc, char **argv)
             "User-Agent: %s/%s\r\n"
             "Authorization: Basic %s\r\n"
             "Ntrip-STR: %s\r\n"
+            "Connection: close\r\n"
             "Transfer-Encoding: chunked\r\n\r\n",
             post_extension, mountpoint, casterouthost, AGENTSTRING,
             revisionstr, authorization, ntrip_str);
