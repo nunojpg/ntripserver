@@ -83,8 +83,16 @@ To install the program run
 - make, or 
 - make debug (for debugging purposes).
 
-The exacutable will show up as ntripserver.
+To compile the source code on a Windows system where a mingw gcc
+compiler is available, you may like to run the following command:
 
+- gcc -Wall -W -O3 -DWINDOWSVERSION ntripserver.c -DNDEBUG 
+  -o ntripserver -lwsock32, or
+- mingw32-make, or 
+- mingw32-make debug
+
+The exacutable will show up as ntripserver on Linux
+or ntripserver.exe on a Windows system.
 
 Usage
 -----

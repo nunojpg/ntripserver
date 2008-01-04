@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.35 2007/08/30 16:40:51 stoecker Exp $
+ * $Id: ntripserver.c,v 1.36 2007/12/14 07:23:44 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,29 +36,48 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.35 $";
-static char datestr[]     = "$Date: 2007/08/30 16:40:51 $";
+static char revisionstr[] = "$Revision: 1.36 $";
+static char datestr[]     = "$Date: 2007/12/14 07:23:44 $";
 
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <netdb.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/termios.h>
-#include <sys/types.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <time.h>
+#include <signal.h>
+#include <unistd.h>
+
+#ifdef WINDOWSVERSION
+  #include <winsock2.h>
+  #include <io.h>
+  #include <sys/stat.h> 
+  #include <windows.h> 
+  typedef SOCKET sockettype;
+  typedef u_long in_addr_t;
+  typedef size_t socklen_t;
+  typedef u_short uint16_t;
+#else
+  typedef int sockettype;
+  #include <arpa/inet.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netdb.h>
+  #include <sys/termios.h>
+  #define closesocket(sock) close(sock)
+  #define INVALID_HANDLE_VALUE -1
+  #define INVALID_SOCKET -1
+#endif
 
 #ifndef COMPILEDATE
 #define COMPILEDATE " built " __DATE__
 #endif
+
+#define ALARMTIME (2*60)
 
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0 /* prevent compiler errors */
@@ -84,11 +103,8 @@ enum OUTMODE { HTTP = 1, RTSP = 2, NTRIP1 = 3, END };
 #define NTRIP_CASTER    "www.euref-ip.net"
 #define NTRIP_PORT      2101
 
-/* default sisnet source */
 #define SISNET_SERVER   "131.176.49.142"
 #define SISNET_PORT     7777
-
-#define ALARMTIME       60
 
 #define RTP_VERSION     2
 #define TIME_RESOLUTION 125
@@ -98,31 +114,40 @@ static const char *ttyport     = "/dev/gps";
 static const char *filepath    = "/dev/stdin";
 static enum MODE inputmode     = INFILE;
 static int sisnet              = 31;
-static int gpsfd               = -1;
-static int socket_tcp          = -1;
-static int socket_udp          = -1;
-static int sigint_received     = 0;
-static int sigalarm_received   = 0;
+static int gps_file            = -1;
+static sockettype gps_socket   = INVALID_SOCKET;
+static sockettype socket_tcp   = INVALID_SOCKET;
+static sockettype socket_udp   = INVALID_SOCKET;
+#ifndef WINDOWSVERSION
+static int gps_serial          = INVALID_HANDLE_VALUE;
 static int sigpipe_received    = 0;
+#else
+HANDLE gps_serial              = INVALID_HANDLE_VALUE;
+#endif
+static int sigalarm_received   = 0;
+static int sigint_received     = 0;
 static int reconnect_sec       = 1;
 
 
 /* Forward references */
-static int  openserial(const char * tty, int blocksz, int baud);
-static void send_receive_loop(int sock, int fd, int outmode,
+static void send_receive_loop(sockettype sock, int outmode,
   struct sockaddr * pcasterRTP, socklen_t length);
 static void usage(int, char *);
 static int  encode(char *buf, int size, const char *user, const char *pwd);
-static int  send_to_caster(char *input, int socket, int input_size);
+static int  send_to_caster(char *input, sockettype socket, int input_size);
 static void close_session(const char *caster_addr, const char *mountpoint, 
   int cseq, int session, char *rtsp_ext, int fallback);
 static int  reconnect(int rec_sec, int rec_sec_max);
-
-/* Signal Handling */
 static void handle_sigint(int sig);
-static void handle_alarm(int sig);
-static void handle_sigpipe(int sig);
 static void setup_signal_handler(int sig, void (*handler)(int));
+#ifndef WINDOWSVERSION
+static int  openserial(const char * tty, int blocksz, int baud);
+static void handle_sigpipe(int sig);
+static void handle_alarm(int sig);
+#else
+static HANDLE openserial(const char * tty, int baud);
+#endif 
+
 
 /*
 * main
@@ -229,16 +254,24 @@ int main(int argc, char **argv)
   datestr[10] = 0;
   }
 
+  /* setup signal handler for CTRL+C */
+  setup_signal_handler(SIGINT, handle_sigint);
+#ifndef WINDOWSVERSION 
+  /* setup signal handler for boken pipe */
+  setup_signal_handler(SIGPIPE, handle_sigpipe);
   /* setup signal handler for timeout */
   setup_signal_handler(SIGALRM, handle_alarm);
   alarm(ALARMTIME);
-
-  /* setup signal handler for CTRL+C */
-  setup_signal_handler(SIGINT, handle_sigint);
+#else
+  /* winsock initialization */
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(1,1), &wsaData))
+  {
+    fprintf(stderr, "Could not init network access.\n");
+    return 20;
+  }
+#endif
   
-/* setup signal handler for boken pipe */
-  setup_signal_handler(SIGPIPE, handle_sigpipe);
-
   /* get and check program arguments */
   if(argc <= 1)
   {
@@ -496,29 +529,33 @@ int main(int argc, char **argv)
   while(inputmode != LAST)
   {
     int input_init = 1;
+    if(sigint_received) break;
     /*** InputMode handling ***/
     switch(inputmode)
     {
     case INFILE:
       {
-	if((gpsfd = open(filepath, O_RDONLY)) < 0)
+	if((gps_file = open(filepath, O_RDONLY)) < 0)
 	{
           perror("ERROR: opening input file");
           exit(1);
 	}
+#ifndef WINDOWSVERSION
 	/* set blocking inputmode in case it was not set
           (seems to be sometimes for fifo's) */
-	fcntl(gpsfd, F_SETFL, 0);
+	fcntl(gps_file, F_SETFL, 0);
+#endif
 	printf("file input: file = %s\n", filepath);
       }
       break;
     case SERIAL: /* open serial port */
       {
-	gpsfd = openserial(ttyport, 1, ttybaud);
-	if(gpsfd < 0)
-	{
-          exit(1);
-	}
+#ifndef WINDOWSVERSION
+	gps_serial = openserial(ttyport, 1, ttybaud);
+#else
+	gps_serial = openserial(ttyport, ttybaud);
+#endif
+	if(gps_serial == INVALID_HANDLE_VALUE) exit(1);
 	printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
       }
       break;
@@ -546,8 +583,8 @@ int main(int argc, char **argv)
           usage(-2, argv[0]);
 	}
 
-	if((gpsfd = socket(AF_INET, inputmode == UDPSOCKET
-	? SOCK_DGRAM : SOCK_STREAM, 0)) < 0)
+	if((gps_socket = socket(AF_INET, inputmode == UDPSOCKET
+	? SOCK_DGRAM : SOCK_STREAM, 0)) == INVALID_SOCKET)
 	{
           fprintf(stderr,
           "ERROR: can't create socket for incoming data stream\n");
@@ -570,7 +607,7 @@ int main(int argc, char **argv)
 
 	if(bindmode)
 	{
-          if(bind(gpsfd, (struct sockaddr *) &caster, sizeof(caster)) < 0)
+          if(bind(gps_socket, (struct sockaddr *) &caster, sizeof(caster)) < 0)
           {
             fprintf(stderr, "ERROR: can't bind input to port %d\n", inport);
             reconnect_sec_max = 0;
@@ -578,7 +615,7 @@ int main(int argc, char **argv)
             break;
           }
 	} /* connect to input-caster or proxy server*/
-	else if(connect(gpsfd, (struct sockaddr *)&caster, sizeof(caster)) < 0)
+	else if(connect(gps_socket, (struct sockaddr *)&caster, sizeof(caster)) < 0)
 	{
           fprintf(stderr, "WARNING: can't connect input to %s at port %d\n",
           inet_ntoa(caster.sin_addr), inport);
@@ -591,7 +628,7 @@ int main(int argc, char **argv)
           int init = 0;
 
           /* set socket buffer size */
-          setsockopt(gpsfd, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
+          setsockopt(gps_socket, SOL_SOCKET, SO_SNDBUF, (const char *) &size,
             sizeof(const char *));
           if(stream_user && stream_password)
           {
@@ -633,7 +670,7 @@ int main(int argc, char **argv)
             "Connection: close\r\n"
             "\r\n", get_extension, stream_name, AGENTSTRING, revisionstr);
           }
-          if((send(gpsfd, szSendBuffer, (size_t)nBufferBytes, 0))
+          if((send(gps_socket, szSendBuffer, (size_t)nBufferBytes, 0))
           != nBufferBytes)
           {
             fprintf(stderr, "WARNING: could not send Source caster request\n");
@@ -643,7 +680,7 @@ int main(int argc, char **argv)
           nBufferBytes = 0;
           /* check Source caster's response */
           while(!init && nBufferBytes < (int)sizeof(szSendBuffer)
-          && (nBufferBytes += recv(gpsfd, szSendBuffer,
+          && (nBufferBytes += recv(gps_socket, szSendBuffer,
           sizeof(szSendBuffer)-nBufferBytes, 0)) > 0)
           {
             if(strstr(szSendBuffer, "\r\n"))
@@ -682,7 +719,7 @@ int main(int argc, char **argv)
           {
             while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
             {
-              if((send(gpsfd, buffer, (size_t)i, 0)) != i)
+              if((send(gps_socket, buffer, (size_t)i, 0)) != i)
               {
         	perror("WARNING: sending init file");
         	input_init = 0;
@@ -714,14 +751,14 @@ int main(int argc, char **argv)
 
 	i = snprintf(buffer, sizeof(buffer), sisnet >= 30 ? "AUTH,%s,%s\r\n"
           : "AUTH,%s,%s", sisnetuser, sisnetpassword);
-	if((send(gpsfd, buffer, (size_t)i, 0)) != i)
+	if((send(gps_socket, buffer, (size_t)i, 0)) != i)
 	{
           perror("WARNING: sending authentication for SISNeT data server");
           input_init = 0;
           break;
 	}
 	i = sisnet >= 30 ? 7 : 5;
-	if((j = recv(gpsfd, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
+	if((j = recv(gps_socket, buffer, i, 0)) != i && strncmp("*AUTH", buffer, 5))
 	{
           fprintf(stderr, "WARNING: SISNeT connect failed:");
           for(i = 0; i < j; ++i)
@@ -737,7 +774,7 @@ int main(int argc, char **argv)
 	}
 	if(sisnet >= 31)
 	{
-          if((send(gpsfd, "START\r\n", 7, 0)) != i)
+          if((send(gps_socket, "START\r\n", 7, 0)) != i)
           {
             perror("WARNING: sending Sisnet start command");
             input_init = 0;
@@ -759,10 +796,10 @@ int main(int argc, char **argv)
 	else
 	{
           fprintf(stderr, "Sending user ID for receiver...\n");
-          nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
+          nBufferBytes = recv(gps_socket, szSendBuffer, BUFSZ, 0);
           strcpy(szSendBuffer, recvrid);
           strcat(szSendBuffer,"\r\n");
-          if(send(gpsfd,szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
+          if(send(gps_socket,szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
           {
             perror("WARNING: sending user ID for receiver");
             input_init = 0;
@@ -780,10 +817,10 @@ int main(int argc, char **argv)
 	else
 	{
           fprintf(stderr, "Sending user password for receiver...\n");
-          nBufferBytes = read(gpsfd, szSendBuffer, BUFSZ);
+          nBufferBytes = recv(gps_socket, szSendBuffer, BUFSZ, 0);
           strcpy(szSendBuffer, recvrpwd);
           strcat(szSendBuffer,"\r\n");
-          if(send(gpsfd, szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
+          if(send(gps_socket, szSendBuffer, strlen(szSendBuffer), MSG_DONTWAIT) < 0)
           {
             perror("WARNING: sending user password for receiver");
             input_init = 0;
@@ -802,8 +839,11 @@ int main(int argc, char **argv)
 
     while((input_init) && (output_init))
     {
-      if((sigint_received) || (sigalarm_received) || (sigpipe_received)) break;
-
+#ifndef WINDOWSVERSION
+      if((sigalarm_received) || (sigint_received) || (sigpipe_received)) break;
+#else
+      if((sigalarm_received) || (sigint_received)) break;
+#endif
       if(!(he = gethostbyname(outhost)))
       {
 	fprintf(stderr, "ERROR: Destination caster or proxy host <%s> unknown\n",
@@ -813,7 +853,7 @@ int main(int argc, char **argv)
       }
 
       /* create socket */
-      if((socket_tcp = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+      if((socket_tcp = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET)
       {
 	perror("ERROR: tcp socket");
         reconnect_sec_max = 0;
@@ -883,7 +923,8 @@ int main(int argc, char **argv)
             szSendBuffer);
           }
 #endif
-          send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
+          send_receive_loop(socket_tcp, outputmode, NULL, 0);
+          input_init = output_init = 0;
           break;
 	case HTTP: /*** Ntrip-Version 2.0 HTTP/1.1 ***/
           nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
@@ -951,10 +992,11 @@ int main(int argc, char **argv)
             fprintf(stderr, "Destination caster response:\n%s\n",szSendBuffer);
           }
 #endif
-          send_receive_loop(socket_tcp, gpsfd, outputmode, NULL, 0);
+          send_receive_loop(socket_tcp, outputmode, NULL, 0);
+          input_init = output_init = 0;
           break;
 	case RTSP: /*** Ntrip-Version 2.0 RTSP / RTP ***/
-          if((socket_udp = socket(AF_INET, SOCK_DGRAM,0)) < 0)
+          if((socket_udp = socket(AF_INET, SOCK_DGRAM,0)) == INVALID_SOCKET)
           {
             perror("ERROR: udp socket");
             exit(4);
@@ -1086,15 +1128,15 @@ int main(int argc, char **argv)
               if((nBufferBytes >= (int)sizeof(szSendBuffer))
               || (nBufferBytes < 0))
               {
-        	fprintf(stderr, "ERROR: Destination caster request to long\n");
+        	    fprintf(stderr, "ERROR: Destination caster request to long\n");
                 reconnect_sec_max = 0;
                 output_init = 0;
         	break;
               }
               if(!send_to_caster(szSendBuffer, socket_tcp, nBufferBytes))
               {
-                 output_init = 0;
-        	 break;
+                output_init = 0;
+        	    break;
               }
             }
             else if((strstr(szSendBuffer,"RTSP/1.0 200 OK\r\n")) && (strstr(szSendBuffer,
@@ -1118,55 +1160,77 @@ int main(int argc, char **argv)
               }
               cseq = 2;
               len = (socklen_t)sizeof(casterRTP);
-              send_receive_loop(socket_udp, gpsfd, outputmode, (struct sockaddr *)&casterRTP, 
+              send_receive_loop(socket_udp, outputmode, (struct sockaddr *)&casterRTP, 
               (socklen_t)len);
               break;
             }
             else{break;}
           }
+          input_init = output_init = 0;
           break;
       }     
     }
     close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
-    if((!sigint_received) && (reconnect_sec_max))
-    {
-       reconnect_sec = reconnect(reconnect_sec, reconnect_sec_max);
-    }
+    if((reconnect_sec_max)  && (!sigint_received))
+      reconnect_sec = reconnect(reconnect_sec, reconnect_sec_max);
     else inputmode = LAST;
   }
   return 0;
 }
 
-static void send_receive_loop(int sock, int fd, int outmode, struct sockaddr* pcasterRTP,
+static void send_receive_loop(sockettype sock, int outmode, struct sockaddr* pcasterRTP,
 socklen_t length)
 {
-  int nodata = 0;
-  char buffer[BUFSZ] = { 0 };
-  char sisnetbackbuffer[200];
-  char szSendBuffer[BUFSZ] = "";
-  int nBufferBytes = 0;
+  int      nodata = 0;
+  char     buffer[BUFSZ] = { 0 };
+  char     sisnetbackbuffer[200];
+  char     szSendBuffer[BUFSZ] = "";
+  int      nBufferBytes = 0;
 
    /* RTSP / RTP Mode */
-  int    isfirstpacket = 1;
-  struct timeval now;
-  struct timeval last = {0,0};
+  int      isfirstpacket = 1;
+  struct   timeval now;
+  struct   timeval last = {0,0};
   long int sendtimediff;
-  int rtpseq = 0;
-  int rtpssrc = 0;
-  int rtptime = 0;
+  int      rtpseq = 0;
+  int      rtpssrc = 0;
+  int      rtptime = 0;
 
   /* data transmission */
   fprintf(stderr,"transfering data ...\n");
-  int send_recv_success = 0;
+  int  send_recv_success = 0;
+#ifdef WINDOWSVERSION 
+  time_t nodata_begin = 0, nodata_current = 0;  
+#endif
   while(1)
   {
     if(send_recv_success < 3) send_recv_success++;  
-    if(!nodata) alarm(ALARMTIME);
-    else nodata = 0; 
-
+    if(!nodata)
+    { 
+#ifndef WINDOWSVERSION
+      alarm(ALARMTIME);
+#else
+      time(&nodata_begin);
+#endif
+    }
+    else 
+    {
+      nodata = 0; 
+#ifdef WINDOWSVERSION 
+      time(&nodata_current);
+      if(difftime(nodata_current, nodata_begin) >= ALARMTIME) 
+      {
+        sigalarm_received = 1;
+        fprintf(stderr, "ERROR: more than %d seconds no activity\n", ALARMTIME);
+      }
+#endif
+    }
     /* signal handling*/
-    if((sigint_received) || (sigpipe_received) || (sigalarm_received)) break;
-    
+#ifdef WINDOWSVERSION
+    if((sigalarm_received) || (sigint_received)) break;
+#else
+    if((sigalarm_received) || (sigint_received) || (sigpipe_received)) break;
+#endif
     if(!nBufferBytes)
     {
       if(inputmode == SISNET && sisnet <= 30)
@@ -1178,19 +1242,40 @@ socklen_t length)
         select(0, 0, 0, 0, &tv);
         memcpy(sisnetbackbuffer, buffer, sizeof(sisnetbackbuffer));
         i = (sisnet >= 30 ? 5 : 3);
-        if((send(gpsfd, "MSG\r\n", i, 0)) != i)
+        if((send(gps_socket, "MSG\r\n", i, 0)) != i)
         {
           perror("WARNING: sending SISNeT data request failed");
           return;
         }
       }
       /*** receiving data ****/
-      nBufferBytes = read(fd, buffer, sizeof(buffer));
+      if(inputmode == INFILE)
+        nBufferBytes = read(gps_file, buffer, sizeof(buffer));
+      else if(inputmode == SERIAL)
+      {
+#ifndef WINDOWSVERSION        
+        nBufferBytes = read(gps_serial, buffer, sizeof(buffer));
+#else
+        DWORD nRead = 0;  
+        if(!ReadFile(gps_serial, buffer, sizeof(buffer), &nRead, NULL))
+        {
+          fprintf(stderr,"ERROR: reading serial input failed\n");
+          return;
+        }
+        nBufferBytes = (int)nRead;
+#endif
+      }
+      else 
+        nBufferBytes = recv(gps_socket, buffer, sizeof(buffer), 0);
       if(!nBufferBytes)
       {
-        printf("WARNING: no data received from input\n");
-        sleep(3);
+        fprintf(stderr, "WARNING: no data received from input\n");
         nodata = 1;
+#ifndef WINDOWSVERSION
+        sleep(3);
+#else
+        Sleep(3*1000);
+#endif
         continue;
       }
       else if((nBufferBytes < 0) && (!sigint_received))
@@ -1339,29 +1424,31 @@ socklen_t length)
  * Parameters:
  *     tty     : pointer to    : A zero-terminated string containing the device
  *               unsigned char   name of the appropriate serial port.
- *     blocksz : integer       : Block size for port I/O
+ *     blocksz : integer       : Block size for port I/O  (ifndef WINDOWSVERSION)
  *     baud :    integer       : Baud rate for port I/O
  *
  * Return Value:
  *     The function returns a file descriptor for the opened port if successful.
- *     The function returns -1 in the event of an error.
+ *     The function returns -1 / INVALID_HANDLE_VALUE in the event of an error.
  *
  * Remarks:
  *
  ********************************************************************/
-
+#ifndef WINDOWSVERSION
 static int openserial(const char * tty, int blocksz, int baud)
 {
-  int fd;
   struct termios termios;
 
-  fd = open(tty, O_RDWR | O_NONBLOCK | O_EXLOCK);
-  if(fd < 0)
+/*** opening the serial port ***/
+  gps_serial = open(tty, O_RDWR | O_NONBLOCK | O_EXLOCK);
+  if(gps_serial < 0)
   {
     perror("ERROR: opening serial connection");
     return (-1);
   }
-  if(tcgetattr(fd, &termios) < 0)
+
+/*** configuring the serial port ***/
+  if(tcgetattr(gps_serial, &termios) < 0)
   {
     perror("ERROR: get serial attributes");
     return (-1);
@@ -1380,7 +1467,6 @@ static int openserial(const char * tty, int blocksz, int baud)
 
 #if (B4800 != 4800)
 /* Not every system has speed settings equal to absolute speed value. */
-
   switch (baud)
   {
   case 300:
@@ -1436,17 +1522,112 @@ static int openserial(const char * tty, int blocksz, int baud)
     perror("ERROR: setting serial speed with cfsetospeed");
     return (-1);
   }
-  if(tcsetattr(fd, TCSANOW, &termios) < 0)
+  if(tcsetattr(gps_serial, TCSANOW, &termios) < 0)
   {
     perror("ERROR: setting serial attributes");
     return (-1);
   }
-  if(fcntl(fd, F_SETFL, 0) == -1)
+  if(fcntl(gps_serial, F_SETFL, 0) == -1)
   {
     perror("WARNING: setting blocking inputmode failed");
   }
-  return (fd);
+  return (gps_serial);
+}
+#else
+static HANDLE openserial(const char * tty, int baud)
+{
+  DCB dcb;  
+  COMMTIMEOUTS cmt;
+
+/*** opening the serial port ***/
+  gps_serial = CreateFile(tty, GENERIC_READ | GENERIC_WRITE, 0, 0, 
+    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+  if(gps_serial == INVALID_HANDLE_VALUE)
+  {
+    fprintf(stderr, "ERROR: opening serial connection\n");
+    return (INVALID_HANDLE_VALUE);
+  }
+/*** configuring the serial port ***/
+  FillMemory(&dcb, sizeof(dcb), 0);
+  dcb.DCBlength = sizeof(dcb);
+  if(!GetCommState(gps_serial, &dcb))
+  {
+    fprintf(stderr, "ERROR: get serial attributes\n");
+    return (INVALID_HANDLE_VALUE);
+  }
+  switch (baud)
+  {
+  case 110:
+    baud = CBR_110;
+    break;
+  case 300:
+    baud = CBR_300;
+    break;
+  case 600:
+    baud = CBR_600;
+    break;
+  case 1200:
+    baud = CBR_1200;
+    break;
+  case 2400:
+    baud = CBR_2400;
+    break;
+  case 4800:
+    baud = CBR_4800;
+    break;
+  case 9600:
+    baud = CBR_9600;
+    break;
+  case 14400:
+    baud = CBR_14400;
+    break;
+  case 19200:
+    baud = CBR_19200;
+    break;
+  case 38400:
+    baud = CBR_38400;
+    break;
+  case 56000:
+    baud = CBR_56000;
+    break;
+  case 57600:
+    baud = CBR_57600;
+    break;
+  case 115200:
+    baud = CBR_115200;
+    break;
+  case 128000:
+    baud = CBR_128000;
+    break;
+  case 256000:
+    baud = CBR_256000;
+    break;
+  default:
+    fprintf(stderr, "WARNING: Baud settings not useful, using 19200\n");
+    baud = CBR_19200;
+    break;
+  }
+  dcb.BaudRate = baud; 
+  dcb.ByteSize = 8;
+  dcb.StopBits = ONESTOPBIT;
+  dcb.Parity   = NOPARITY;
+  if(!GetCommState(gps_serial, &dcb))
+  {
+    fprintf(stderr, "ERROR: get serial attributes\n");
+    return (INVALID_HANDLE_VALUE);
+  }
+  FillMemory(&cmt, sizeof(cmt), 0);
+  cmt.ReadIntervalTimeout = 1000;
+  cmt.ReadTotalTimeoutMultiplier = 1;
+  cmt.ReadTotalTimeoutConstant = 0;
+  if(!SetCommTimeouts(gps_serial, &cmt))
+  {
+    fprintf(stderr, "ERROR: set serial timeouts\n");
+    return (INVALID_HANDLE_VALUE); 
+  }
+  return (gps_serial);
 } /* openserial */
+#endif
 
 /********************************************************************
 * usage
@@ -1462,7 +1643,6 @@ static int openserial(const char * tty, int blocksz, int baud)
 * Remarks:
 *
 *********************************************************************/
-static
 #ifdef __GNUC__
 __attribute__ ((noreturn))
 #endif /* __GNUC__ */
@@ -1569,6 +1749,7 @@ static void handle_sigint(int sig)
   fprintf(stderr, "WARNING: SIGINT received - ntripserver terminates\n");
 }
 
+#ifndef WINDOWSVERSION
 #ifdef __GNUC__
 static void handle_alarm(int sig __attribute__((__unused__)))
 #else /* __GNUC__ */
@@ -1584,7 +1765,10 @@ static void handle_sigpipe(int sig __attribute__((__unused__)))
 #else /* __GNUC__ */
 static void handle_sigpipe(int sig)
 #endif /* __GNUC__ */
-{sigpipe_received = 1;}
+{
+  sigpipe_received = 1;
+}
+#endif /* WINDOWSVERSION */
 
 static void setup_signal_handler(int sig, void (*handler)(int))
 {
@@ -1601,6 +1785,7 @@ static void setup_signal_handler(int sig, void (*handler)(int))
 #endif
   return;
 } /* setupsignal_handler */
+
 
 /********************************************************************
  * base64-encoding                                                  *
@@ -1659,7 +1844,7 @@ static int encode(char *buf, int size, const char *user, const char *pwd)
 /********************************************************************
  * send message to caster                                           *
 *********************************************************************/
-static int send_to_caster(char *input, int socket, int input_size)
+static int send_to_caster(char *input, sockettype socket, int input_size)
 {
  int send_error = 1;
 
@@ -1687,9 +1872,13 @@ int reconnect(int rec_sec, int rec_sec_max)
   fprintf(stderr,"reconnect in <%d> seconds\n\n", rec_sec);
   rec_sec *= 2;
   if (rec_sec > rec_sec_max) rec_sec = rec_sec_max;
+#ifndef WINDOWSVERSION
   sleep(rec_sec);
-  sigalarm_received = 0;
   sigpipe_received = 0;
+#else
+  Sleep(rec_sec*1000);
+#endif
+  sigalarm_received = 0;
   return rec_sec;
 } /* reconnect */
 
@@ -1703,23 +1892,66 @@ int cseq, int session, char *rtsp_ext, int fallback)
   int  size_send_buf;
   char send_buf[BUFSZ];
 
-  if((gpsfd != -1) && (!fallback))
+  if(!fallback)
   {
-    if(close(gpsfd) == -1)
-    {
-      perror("ERROR: close input device ");
-      exit(0);
-    }
-    else
-    {
-      gpsfd = -1;
+    if((gps_socket != INVALID_SOCKET) && 
+       ((inputmode == TCPSOCKET) || (inputmode == UDPSOCKET) || 
+       (inputmode == CASTER)    || (inputmode == SISNET)))
+    { 
+      if(closesocket(gps_socket) == -1)
+      {
+        perror("ERROR: close input device ");
+        exit(0);
+      }
+      else
+      {
+        gps_socket = -1;
 #ifndef NDEBUG  
-    fprintf(stderr, "close input device: successful\n");
+        fprintf(stderr, "close input device: successful\n");
 #endif
+      }
+    }
+    else if((gps_serial != INVALID_HANDLE_VALUE) && (inputmode == SERIAL))
+    {
+#ifndef WINDOWSVERSION
+      if(close(gps_serial) == INVALID_HANDLE_VALUE)
+      {
+        perror("ERROR: close input device ");
+        exit(0);
+      }
+#else
+      if(!CloseHandle(gps_serial))
+      {
+        fprintf(stderr, "ERROR: close input device ");
+        exit(0);
+      }
+#endif
+      else
+      {
+        gps_serial = INVALID_HANDLE_VALUE;
+#ifndef NDEBUG  
+        fprintf(stderr, "close input device: successful\n");
+#endif
+      }
+    }
+    else if((gps_file != -1) && (inputmode == INFILE))
+    { 
+      if(close(gps_file) == -1)
+      {
+        perror("ERROR: close input device ");
+        exit(0);
+      }
+      else
+      {
+        gps_file = -1;
+#ifndef NDEBUG  
+        fprintf(stderr, "close input device: successful\n");
+#endif
+      }
     }
   }
 
-  if(socket_udp  != -1)
+  if(socket_udp  != INVALID_SOCKET)
   {
     if(cseq == 2)
     {
@@ -1741,7 +1973,7 @@ int cseq, int session, char *rtsp_ext, int fallback)
       fprintf(stderr, "Destination caster response:\n%s", send_buf);
 #endif
     }
-    if(close(socket_udp)==-1)
+    if(closesocket(socket_udp)==-1)
     {
       perror("ERROR: close udp socket");
       exit(0);
@@ -1755,9 +1987,9 @@ int cseq, int session, char *rtsp_ext, int fallback)
     }
   }
 
-  if(socket_tcp != -1)
+  if(socket_tcp != INVALID_SOCKET)
   {
-    if(close(socket_tcp) == -1)
+    if(closesocket(socket_tcp) == -1)
     {
       perror("ERROR: close tcp socket");
       exit(0);

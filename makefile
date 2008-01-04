@@ -1,11 +1,19 @@
 #!/usr/bin/make
-# $Id: makefile,v 1.6 2007/08/30 07:45:59 stoecker Exp $
+# $Id: makefile,v 1.7 2007/08/30 14:57:34 stuerze Exp $
+
+ifdef windir
+CC   = gcc
+OPTS = -Wall -W -O3 -DWINDOWSVERSION
+LIBS = -lwsock32
+else
+OPTS = -Wall -W -O3
+endif
 
 ntripserver: ntripserver.c
-	$(CC) -Wall -W -O3 $? -DNDEBUG -o $@
+	$(CC) $(OPTS) $? -DNDEBUG -o $@ $(LIBS)
 
 debug: ntripserver.c
-	$(CC) -Wall -W -O3 $? -o ntripserver
+	$(CC) $(OPTS) $? -o ntripserver $(LIBS)
 
 clean:
 	$(RM) -f ntripserver core
