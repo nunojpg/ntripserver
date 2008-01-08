@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.36 2007/12/14 07:23:44 stoecker Exp $
+ * $Id: ntripserver.c,v 1.37 2008/01/04 15:23:06 stuerze Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.36 $";
-static char datestr[]     = "$Date: 2007/12/14 07:23:44 $";
+static char revisionstr[] = "$Revision: 1.37 $";
+static char datestr[]     = "$Date: 2008/01/04 15:23:06 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -1538,9 +1538,11 @@ static HANDLE openserial(const char * tty, int baud)
 {
   DCB dcb;  
   COMMTIMEOUTS cmt;
+  char compath[15] = "";
 
+  snprintf(compath, sizeof(compath), "\\\\.\\%s", tty);
 /*** opening the serial port ***/
-  gps_serial = CreateFile(tty, GENERIC_READ | GENERIC_WRITE, 0, 0, 
+  gps_serial = CreateFile(compath, GENERIC_READ | GENERIC_WRITE, 0, 0, 
     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
   if(gps_serial == INVALID_HANDLE_VALUE)
   {
