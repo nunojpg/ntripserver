@@ -155,7 +155,7 @@ The user may call the program with the following options:
    -W <SourcePass>  Source caster password for input stream access, mandatory
                     for protected streams if <InputMode> = 6
 
--O <OutputMode> Sets output mode for communatation with destination caster, optional
+-O <OutputMode> Sets output mode for communication with destination caster, optional
    1 = http:   NTRIP Version 2.0 Caster in TCP/IP mode
    2 = rtsp:   NTRIP Version 2.0 Caster in RTSP/RTP mode
    3 = ntrip1: NTRIP Version 1.0 Caster
