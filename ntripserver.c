@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.38 2008/01/08 11:20:01 stuerze Exp $
+ * $Id: ntripserver.c,v 1.39 2008/04/04 10:03:11 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.38 $";
-static char datestr[]     = "$Date: 2008/01/08 11:20:01 $";
+static char revisionstr[] = "$Revision: 1.39 $";
+static char datestr[]     = "$Date: 2008/04/04 10:03:11 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -685,7 +685,7 @@ int main(int argc, char **argv)
           {
             if(strstr(szSendBuffer, "\r\n"))
             {              
-              if(strncmp(szSendBuffer, "ICY 200 OK", 10))
+              if(!strstr(szSendBuffer, "ICY 200 OK"))
               {
                 int k;
                 fprintf(stderr,
@@ -697,7 +697,7 @@ int main(int argc, char **argv)
                   ? szSendBuffer[k] : '.');
         	}
                 fprintf(stderr, "\n");
-                if(strncmp(szSendBuffer, "SOURCETABLE 200 OK",18))
+                if(!strstr(szSendBuffer, "SOURCETABLE 200 OK"))
                 {
                   reconnect_sec_max =0;
                 }
@@ -1264,8 +1264,12 @@ socklen_t length, int rtpssrc)
         nBufferBytes = (int)nRead;
 #endif
       }
-      else 
+      else
+#ifdef WINDOWSVERSION
         nBufferBytes = recv(gps_socket, buffer, sizeof(buffer), 0);
+#else
+        nBufferBytes = read(gps_socket, buffer, sizeof(buffer));
+#endif
       if(!nBufferBytes)
       {
         fprintf(stderr, "WARNING: no data received from input\n");
@@ -1384,7 +1388,6 @@ socklen_t length, int rtpssrc)
       for(j=0; j<nBufferBytes; j++) {rtpbuffer[12+j] = buffer[j];}
       last.tv_sec  = now.tv_sec;
       last.tv_usec = now.tv_usec;
-
       if ((i = sendto(sock, rtpbuffer, 12 + nBufferBytes, 0, pcasterRTP,
       length)) != (nBufferBytes + 12))
       {
