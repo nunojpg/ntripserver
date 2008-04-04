@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.37 2008/01/04 15:23:06 stuerze Exp $
+ * $Id: ntripserver.c,v 1.38 2008/01/08 11:20:01 stuerze Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.37 $";
-static char datestr[]     = "$Date: 2008/01/04 15:23:06 $";
+static char revisionstr[] = "$Revision: 1.38 $";
+static char datestr[]     = "$Date: 2008/01/08 11:20:01 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -131,7 +131,7 @@ static int reconnect_sec       = 1;
 
 /* Forward references */
 static void send_receive_loop(sockettype sock, int outmode,
-  struct sockaddr * pcasterRTP, socklen_t length);
+  struct sockaddr * pcasterRTP, socklen_t length, int rtpssrc);
 static void usage(int, char *);
 static int  encode(char *buf, int size, const char *user, const char *pwd);
 static int  send_to_caster(char *input, sockettype socket, int input_size);
@@ -441,7 +441,7 @@ int main(int argc, char **argv)
      fprintf(stderr, "\nWARNING: *** NTRIP VERSION 2 PROTOCOL IS STILL"
       " BETA AND MAY BE CHANGED ***\n\n");
   }
-  
+
   if(*ntrip_str && (outputmode == NTRIP1))
   {
      fprintf(stderr, "WARNING: OutputMode is Ntrip version 1.0"
@@ -923,7 +923,7 @@ int main(int argc, char **argv)
             szSendBuffer);
           }
 #endif
-          send_receive_loop(socket_tcp, outputmode, NULL, 0);
+          send_receive_loop(socket_tcp, outputmode, NULL, 0, 0);
           input_init = output_init = 0;
           break;
 	case HTTP: /*** Ntrip-Version 2.0 HTTP/1.1 ***/
@@ -992,7 +992,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "Destination caster response:\n%s\n",szSendBuffer);
           }
 #endif
-          send_receive_loop(socket_tcp, outputmode, NULL, 0);
+          send_receive_loop(socket_tcp, outputmode, NULL, 0, 0);
           input_init = output_init = 0;
           break;
 	case RTSP: /*** Ntrip-Version 2.0 RTSP / RTP ***/
@@ -1120,7 +1120,7 @@ int main(int argc, char **argv)
               session = atoi(tok_buf[6]);
               server_port = atoi(tok_buf[10]);
               nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
-        	"POST rtsp://%s%s/%s RTSP/1.0\r\n"
+        	"RECORD rtsp://%s%s/%s RTSP/1.0\r\n"
         	"CSeq: 2\r\n"
         	"Session: %d\r\n"
         	"\r\n",
@@ -1161,14 +1161,14 @@ int main(int argc, char **argv)
               cseq = 2;
               len = (socklen_t)sizeof(casterRTP);
               send_receive_loop(socket_udp, outputmode, (struct sockaddr *)&casterRTP, 
-              (socklen_t)len);
+              (socklen_t)len, session);
               break;
             }
             else{break;}
           }
           input_init = output_init = 0;
           break;
-      }     
+      }
     }
     close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
     if((reconnect_sec_max)  && (!sigint_received))
@@ -1179,7 +1179,7 @@ int main(int argc, char **argv)
 }
 
 static void send_receive_loop(sockettype sock, int outmode, struct sockaddr* pcasterRTP,
-socklen_t length)
+socklen_t length, int rtpssrc)
 {
   int      nodata = 0;
   char     buffer[BUFSZ] = { 0 };
@@ -1193,7 +1193,6 @@ socklen_t length)
   struct   timeval last = {0,0};
   long int sendtimediff;
   int      rtpseq = 0;
-  int      rtpssrc = 0;
   int      rtptime = 0;
 
   /* data transmission */
@@ -1358,7 +1357,6 @@ socklen_t length)
       if(isfirstpacket){
         rtpseq = rand();
         rtptime = rand();
-        rtpssrc = rand();
         last = now;
         isfirstpacket = 0;
       }
