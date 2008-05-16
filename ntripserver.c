@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.39 2008/04/04 10:03:11 stoecker Exp $
+ * $Id: ntripserver.c,v 1.40 2008/04/04 13:07:31 stuerze Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.39 $";
-static char datestr[]     = "$Date: 2008/04/04 10:03:11 $";
+static char revisionstr[] = "$Revision: 1.40 $";
+static char datestr[]     = "$Date: 2008/04/04 13:07:31 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -127,7 +127,10 @@ HANDLE gps_serial              = INVALID_HANDLE_VALUE;
 static int sigalarm_received   = 0;
 static int sigint_received     = 0;
 static int reconnect_sec       = 1;
-
+static const char * casterouthost = NTRIP_CASTER;
+static char rtsp_extension[SZ] = "";
+static const char * mountpoint = NULL;
+static int udp_cseq            = 1;
 
 /* Forward references */
 static void send_receive_loop(sockettype sock, int outmode,
@@ -135,8 +138,8 @@ static void send_receive_loop(sockettype sock, int outmode,
 static void usage(int, char *);
 static int  encode(char *buf, int size, const char *user, const char *pwd);
 static int  send_to_caster(char *input, sockettype socket, int input_size);
-static void close_session(const char *caster_addr, const char *mountpoint, 
-  int cseq, int session, char *rtsp_ext, int fallback);
+static void close_session(const char *caster_addr, const char *mountpoint,
+  int session, char *rtsp_ext, int fallback);
 static int  reconnect(int rec_sec, int rec_sec_max);
 static void handle_sigint(int sig);
 static void setup_signal_handler(int sig, void (*handler)(int));
@@ -183,7 +186,6 @@ int main(int argc, char **argv)
   char               get_extension[SZ] = "";
 
   struct hostent *   he;
-  const char *       mountpoint = NULL;
 
   const char *       sisnetpassword = "";
   const char *       sisnetuser = "";
@@ -200,14 +202,12 @@ int main(int argc, char **argv)
   int                bindmode = 0;
 
   /*** OUTPUT ***/
-  const char *       casterouthost = NTRIP_CASTER;
   unsigned int       casteroutport = NTRIP_PORT;
   const char *       outhost = 0;
   unsigned int       outport = 0;
   char               post_extension[SZ] = "";
-  char               rtsp_extension[SZ] = "";
 
-  const char *       ntrip_str = "";
+  const char *       ntrip_str = 0;
 
   const char *       user = "";
   const char *       password = "";
@@ -219,7 +219,6 @@ int main(int argc, char **argv)
   int                client_port = 0;
   int                server_port = 0;
   int                session = 0;
-  int                cseq = 0;
   socklen_t          len = 0;
   int                i = 0;
 
@@ -442,7 +441,7 @@ int main(int argc, char **argv)
       " BETA AND MAY BE CHANGED ***\n\n");
   }
 
-  if(*ntrip_str && (outputmode == NTRIP1))
+  if(ntrip_str && (outputmode == NTRIP1))
   {
      fprintf(stderr, "WARNING: OutputMode is Ntrip version 1.0"
      " - Ntrip-STR will not be considered\n");
@@ -848,7 +847,7 @@ int main(int argc, char **argv)
       {
 	fprintf(stderr, "ERROR: Destination caster or proxy host <%s> unknown\n",
 	outhost);
-        close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
+        close_session(casterouthost, mountpoint, session, rtsp_extension, 0);
 	usage(-2, argv[0]);
       }
 
@@ -932,12 +931,12 @@ int main(int argc, char **argv)
             "Host: %s\r\n"
             "Ntrip-Version: Ntrip/2.0\r\n"
             "User-Agent: %s/%s\r\n"
-            "Authorization: Basic %s\r\n"
-            "Ntrip-STR: %s\r\n"
+            "Authorization: Basic %s%s%s\r\n"
             "Connection: close\r\n"
             "Transfer-Encoding: chunked\r\n\r\n",
             post_extension, mountpoint, casterouthost, AGENTSTRING,
-            revisionstr, authorization, ntrip_str);
+            revisionstr, authorization, ntrip_str ? "\r\nNtrip-STR: " : "",
+            ntrip_str);
           if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
           {
             fprintf(stderr, "ERROR: Destination caster request to long\n");
@@ -974,7 +973,7 @@ int main(int argc, char **argv)
               casterouthost,
               *proxyhost ? " or Proxy <" : "", proxyhost, *proxyhost ? ">" : "",
               *proxyhost ? "       or HTTP/1.1 not implemented at Proxy\n" : "");
-              close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+              close_session(casterouthost, mountpoint, session, rtsp_extension, 1);
               outputmode = NTRIP1;
               break;
             }
@@ -1028,15 +1027,15 @@ int main(int argc, char **argv)
           }
           nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
             "SETUP rtsp://%s%s/%s RTSP/1.0\r\n"
-            "CSeq: 1\r\n"
+            "CSeq: %d\r\n"
             "Ntrip-Version: Ntrip/2.0\r\n"
             "Ntrip-Component: Ntripserver\r\n"
             "User-Agent: %s/%s\r\n"
             "Transport: RTP/GNSS;unicast;client_port=%u\r\n"
-            "Authorization: Basic %s\r\n"
-            "Ntrip-STR: %s\r\n\r\n",
-            casterouthost, rtsp_extension, mountpoint, AGENTSTRING, revisionstr,
-            client_port, authorization, ntrip_str);
+            "Authorization: Basic %s%s%s\r\n\r\n",
+            casterouthost, rtsp_extension, mountpoint, udp_cseq++, AGENTSTRING,
+            revisionstr, client_port, authorization, ntrip_str
+            ? "\r\nNtrip-STR: " : "", ntrip_str);
           if((nBufferBytes > (int)sizeof(szSendBuffer)) || (nBufferBytes < 0))
           {
             fprintf(stderr, "ERROR: Destination caster request to long\n");
@@ -1075,7 +1074,7 @@ int main(int argc, char **argv)
                   "ntripserver falls back to Ntrip Version 2.0 in TCP/IP"
                   " mode\n\n", casterouthost,
                   *proxyhost ? " or Proxy <" :"", proxyhost, *proxyhost ? ">":"");
-                  close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+                  close_session(casterouthost, mountpoint, session, rtsp_extension, 1);
                   outputmode = HTTP;
                   break;
         	}
@@ -1090,7 +1089,7 @@ int main(int argc, char **argv)
                   *proxyhost ? ">":"",
                   *proxyhost ? " or HTTP/1.1 not implemented at Proxy\n" : "",
                   *proxyhost ? " or Proxy" :"");
-                  close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 1);
+                  close_session(casterouthost, mountpoint, session, rtsp_extension, 1);
                   outputmode = NTRIP1;
                   break;
         	}
@@ -1121,10 +1120,11 @@ int main(int argc, char **argv)
               server_port = atoi(tok_buf[10]);
               nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
         	"RECORD rtsp://%s%s/%s RTSP/1.0\r\n"
-        	"CSeq: 2\r\n"
+        	"CSeq: %d\r\n"
         	"Session: %d\r\n"
         	"\r\n",
-        	casterouthost, rtsp_extension,  mountpoint,  session);
+        	casterouthost, rtsp_extension,  mountpoint,  udp_cseq++,
+        	session);
               if((nBufferBytes >= (int)sizeof(szSendBuffer))
               || (nBufferBytes < 0))
               {
@@ -1158,7 +1158,6 @@ int main(int argc, char **argv)
         	memcpy((char *)&casterRTP.sin_addr.s_addr,
         	he->h_addr_list[0], (size_t)he->h_length);
               }
-              cseq = 2;
               len = (socklen_t)sizeof(casterRTP);
               send_receive_loop(socket_udp, outputmode, (struct sockaddr *)&casterRTP, 
               (socklen_t)len, session);
@@ -1170,7 +1169,7 @@ int main(int argc, char **argv)
           break;
       }
     }
-    close_session(casterouthost, mountpoint, cseq, session, rtsp_extension, 0);
+    close_session(casterouthost, mountpoint, session, rtsp_extension, 0);
     if((reconnect_sec_max)  && (!sigint_received))
       reconnect_sec = reconnect(reconnect_sec, reconnect_sec_max);
     else inputmode = LAST;
@@ -1194,6 +1193,21 @@ socklen_t length, int rtpssrc)
   long int sendtimediff;
   int      rtpseq = 0;
   int      rtptime = 0;
+  time_t   laststate = time(0);
+
+  if(outmode == RTSP)
+  {
+#ifdef WINDOWSVERSION
+    u_long blockmode = 1;
+    if(ioctlsocket(socket_tcp, FIONBIO, &blockmode))
+#else /* WINDOWSVERSION */
+    if(fcntl(socket_tcp, F_SETFL, O_NONBLOCK) < 0)
+#endif /* WINDOWSVERSION */
+    {
+      fprintf(stderr, "Could not set nonblocking mode\n");
+      return;
+    }
+  }
 
   /* data transmission */
   fprintf(stderr,"transfering data ...\n");
@@ -1354,6 +1368,8 @@ socklen_t length, int rtpssrc)
     /*** Ntrip-Version 2.0 RTSP(TCP) / RTP(UDP) ***/
     else if((nBufferBytes)  && (outmode == RTSP))
     {
+      time_t ct;
+      int r;
       char rtpbuffer[BUFSZ+12];
       int i, j;
       gettimeofday(&now, NULL);
@@ -1408,6 +1424,45 @@ socklen_t length, int rtpssrc)
       else
       {
         nBufferBytes = 0;
+      }
+      ct = time(0);
+      if(ct-laststate > 15)
+      {
+        i = snprintf(buffer, sizeof(buffer),
+        "GET_PARAMETER rtsp://%s%s/%s RTSP/1.0\r\n"
+        "CSeq: %d\r\n"
+        "Session: %d\r\n"
+        "\r\n",
+        casterouthost, rtsp_extension,  mountpoint,  udp_cseq++, rtpseq);
+        if(i > (int)sizeof(buffer) || i < 0)
+        {
+          fprintf(stderr, "Requested data too long\n");
+          return;
+        }
+        else if(send(socket_tcp, buffer, (size_t)i, 0) != i)
+        {
+          perror("send");
+          return;
+        }
+        laststate = ct;
+      }
+      /* ignore RTSP server replies */
+      if((r=recv(socket_tcp, buffer, sizeof(buffer), 0)) < 0)
+      {
+#ifdef WINDOWSVERSION
+        if(WSAGetLastError() != WSAEWOULDBLOCK)
+#else /* WINDOWSVERSION */
+        if(errno != EAGAIN)
+#endif /* WINDOWSVERSION */
+        {
+          fprintf(stderr, "Control connection closed\n");
+          return;
+        }
+      }
+      else if(!r)
+      {
+        fprintf(stderr, "Control connection read error\n");
+        return;
       }
     }
     if(send_recv_success == 3) reconnect_sec = 1;
@@ -1890,7 +1945,7 @@ int reconnect(int rec_sec, int rec_sec_max)
  * close session                                                    *
 *********************************************************************/
 static void close_session(const char *caster_addr, const char *mountpoint, 
-int cseq, int session, char *rtsp_ext, int fallback)
+int session, char *rtsp_ext, int fallback)
 {
   int  size_send_buf;
   char send_buf[BUFSZ];
@@ -1954,16 +2009,16 @@ int cseq, int session, char *rtsp_ext, int fallback)
     }
   }
 
-  if(socket_udp  != INVALID_SOCKET)
+  if(socket_udp != INVALID_SOCKET)
   {
-    if(cseq == 2)
+    if(udp_cseq > 2)
     {
       size_send_buf = snprintf(send_buf, sizeof(send_buf),
         "TEARDOWN rtsp://%s%s/%s RTSP/1.0\r\n"
-        "CSeq: 2\r\n"
+        "CSeq: %d\r\n"
         "Session: %d\r\n"
         "\r\n",
-        caster_addr, rtsp_ext, mountpoint, session);
+        caster_addr, rtsp_ext, mountpoint, udp_cseq++, session);
       if((size_send_buf >= (int)sizeof(send_buf)) || (size_send_buf < 0))
       {
         fprintf(stderr, "ERROR: Destination caster request to long\n");
