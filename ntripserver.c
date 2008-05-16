@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.40 2008/04/04 13:07:31 stuerze Exp $
+ * $Id: ntripserver.c,v 1.41 2008/05/16 07:33:31 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.40 $";
-static char datestr[]     = "$Date: 2008/04/04 13:07:31 $";
+static char revisionstr[] = "$Revision: 1.41 $";
+static char datestr[]     = "$Date: 2008/05/16 07:33:31 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -1433,7 +1433,7 @@ socklen_t length, int rtpssrc)
         "CSeq: %d\r\n"
         "Session: %d\r\n"
         "\r\n",
-        casterouthost, rtsp_extension,  mountpoint,  udp_cseq++, rtpseq);
+        casterouthost, rtsp_extension,  mountpoint,  udp_cseq++, rtpssrc);
         if(i > (int)sizeof(buffer) || i < 0)
         {
           fprintf(stderr, "Requested data too long\n");
