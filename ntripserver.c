@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.41 2008/05/16 07:33:31 stoecker Exp $
+ * $Id: ntripserver.c,v 1.42 2008/05/16 07:55:15 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.41 $";
-static char datestr[]     = "$Date: 2008/05/16 07:33:31 $";
+static char revisionstr[] = "$Revision: 1.42 $";
+static char datestr[]     = "$Date: 2008/05/16 07:55:15 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -834,7 +834,7 @@ int main(int argc, char **argv)
     }
     
     /* ----- main part ----- */
-    int output_init = 1;
+    int output_init = 1, fallback = 0;
 
     while((input_init) && (output_init))
     {
@@ -880,6 +880,7 @@ int main(int argc, char **argv)
       switch(outputmode)
       {
 	case NTRIP1: /*** OutputMode Ntrip Version 1.0 ***/
+          fallback = 0;
           nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
             "SOURCE %s %s/%s\r\n"
             "Source-Agent: %s/%s\r\n\r\n",
@@ -1076,6 +1077,7 @@ int main(int argc, char **argv)
                   *proxyhost ? " or Proxy <" :"", proxyhost, *proxyhost ? ">":"");
                   close_session(casterouthost, mountpoint, session, rtsp_extension, 1);
                   outputmode = HTTP;
+                  fallback = 1;
                   break;
         	}
         	else
@@ -1091,6 +1093,7 @@ int main(int argc, char **argv)
                   *proxyhost ? " or Proxy" :"");
                   close_session(casterouthost, mountpoint, session, rtsp_extension, 1);
                   outputmode = NTRIP1;
+                  fallback = 1;
                   break;
         	}
               }
@@ -1170,7 +1173,7 @@ int main(int argc, char **argv)
       }
     }
     close_session(casterouthost, mountpoint, session, rtsp_extension, 0);
-    if((reconnect_sec_max)  && (!sigint_received))
+    if( (reconnect_sec_max || fallback) && !sigint_received )
       reconnect_sec = reconnect(reconnect_sec, reconnect_sec_max);
     else inputmode = LAST;
   }
