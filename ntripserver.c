@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.42 2008/05/16 07:55:15 stoecker Exp $
+ * $Id: ntripserver.c,v 1.43 2008/05/21 08:01:20 stuerze Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.42 $";
-static char datestr[]     = "$Date: 2008/05/16 07:55:15 $";
+static char revisionstr[] = "$Revision: 1.43 $";
+static char datestr[]     = "$Date: 2008/05/21 08:01:20 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -207,7 +207,7 @@ int main(int argc, char **argv)
   unsigned int       outport = 0;
   char               post_extension[SZ] = "";
 
-  const char *       ntrip_str = 0;
+  const char *       ntrip_str = "";
 
   const char *       user = "";
   const char *       password = "";
