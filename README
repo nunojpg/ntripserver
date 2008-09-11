@@ -118,6 +118,8 @@ The user may call the program with the following options:
                     <InputMode>=1
    -b <BaudRate>    Serial input baud rate, default: 19200 bps, mandatory
                     if <InputMode>=1
+   -f <InitFile>   Name of initialization file to be send to input device,
+                    optional
 
    <InputMode> = 2|5 (IP port | UDP port):
    -H <ServerHost>  Input host name or address, default: 127.0.0.1,

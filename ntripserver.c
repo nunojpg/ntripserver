@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.43 2008/05/21 08:01:20 stuerze Exp $
+ * $Id: ntripserver.c,v 1.44 2008/06/06 07:34:09 stuerze Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.43 $";
-static char datestr[]     = "$Date: 2008/05/21 08:01:20 $";
+static char revisionstr[] = "$Revision: 1.44 $";
+static char datestr[]     = "$Date: 2008/06/06 07:34:09 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -556,6 +556,52 @@ int main(int argc, char **argv)
 #endif
 	if(gps_serial == INVALID_HANDLE_VALUE) exit(1);
 	printf("serial input: device = %s, speed = %d\n", ttyport, ttybaud);
+
+	if(initfile)
+	{
+          char buffer[1024];
+          FILE *fh;
+          int i;
+
+          if((fh = fopen(initfile, "r")))
+          {
+            while((i = fread(buffer, 1, sizeof(buffer), fh)) > 0)
+            {
+#ifndef WINDOWSVERSION
+              if((write(gps_serial, buffer, i)) != i)
+              {
+        	perror("WARNING: sending init file");
+        	input_init = 0;
+        	break;
+              }
+#else
+              DWORD nWrite = -1;  
+              if(!WriteFile(gps_serial, buffer, sizeof(buffer), &nWrite, NULL))
+              {
+                fprintf(stderr,"ERROR: sending init file \n");
+        	input_init = 0;
+                break;
+              }
+              i = (int)nWrite;
+#endif
+            }
+            if(i < 0)
+            {
+              perror("ERROR: reading init file");
+              reconnect_sec_max = 0;
+              input_init = 0;
+              break;
+            }
+            fclose(fh);
+          }
+          else
+          {
+            fprintf(stderr, "ERROR: can't read init file <%s>\n", initfile);
+            reconnect_sec_max = 0;
+            input_init = 0;
+            break;
+          }
+	}
       }
       break;
     case TCPSOCKET: case UDPSOCKET: case SISNET: case CASTER:
@@ -1740,7 +1786,9 @@ void usage(int rc, char *name)
   fprintf(stderr, "       -i <Device>       Serial input device, default: /dev/gps, mandatory if\n");
   fprintf(stderr, "                         <InputMode>=1\n");
   fprintf(stderr, "       -b <BaudRate>     Serial input baud rate, default: 19200 bps, mandatory\n");
-  fprintf(stderr, "                         if <InputMode>=1\n\n");
+  fprintf(stderr, "                         if <InputMode>=1\n");
+  fprintf(stderr, "       -f <InitFile>     Name of initialization file to be send to input device,\n");
+  fprintf(stderr, "                         optional\n\n");
   fprintf(stderr, "       <InputMode> = 2|5 (IP port | UDP port):\n");
   fprintf(stderr, "       -H <ServerHost>   Input host name or address, default: 127.0.0.1,\n");
   fprintf(stderr, "                         mandatory if <InputMode> = 2|5\n");
