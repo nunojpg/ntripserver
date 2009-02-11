@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.45 2008/09/11 09:18:23 stuerze Exp $
+ * $Id: ntripserver.c,v 1.46 2009/02/10 12:20:09 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.45 $";
-static char datestr[]     = "$Date: 2008/09/11 09:18:23 $";
+static char revisionstr[] = "$Revision: 1.46 $";
+static char datestr[]     = "$Date: 2009/02/10 12:20:09 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -1577,12 +1577,17 @@ socklen_t length, int rtpssrc)
       else
         nBufferBytes = 0;
       i = recv(socket_tcp, rtpbuf, sizeof(rtpbuf), 0);
-      if(i >= 12 && (unsigned char)rtpbuf[0] == (2 << 6) && rtpbuf[1] >= 96
-      && rtpbuf[1] <= 98 && rtpssrc ==
+      if(i >= 12 && (unsigned char)rtpbuf[0] == (2 << 6) && rtpssrc ==
       (((unsigned char)rtpbuf[8]<<24)+((unsigned char)rtpbuf[9]<<16)
       +((unsigned char)rtpbuf[10]<<8)+(unsigned char)rtpbuf[11]))
       {
-        rtptime = time(0);
+        if(rtpbuf[1] == 96)
+            rtptime = time(0);
+        else if(rtpbuf[1] == 98)
+        {
+            fprintf(stderr, "Connection end\n");
+            return;
+        }
       }
       else if(time(0) > rtptime+60)
       {
