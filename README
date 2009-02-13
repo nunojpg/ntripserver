@@ -66,7 +66,8 @@ and forwards that incoming stream to either
 
 1. an NTRIP Version 2.0 Caster via TCP/IP (Output, Destination), or
 2. an NTRIP Version 2.0 Caster via RTSP/RTP (Output, Destination), or
-3. an NTRIP Version 1.0 Caster.
+3. an NTRIP Version 2.0 Caster via plain UDP (Output, Destination), or
+4. an NTRIP Version 1.0 Caster.
 
 Please note, the options to support NTRIP Version 2.0 are currently still 
 under development and should be used with care. Keep in mind that details
