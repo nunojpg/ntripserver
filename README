@@ -5,13 +5,11 @@
 (c) German Federal Agency for Cartography and Geodesy (BKG), 2002-2007
 
 
-Files in ntripserver.tgz
+Files in ntripserver.zip
 ------------------------
-- ntripserver.tar: ntripserver program tar archive
 - makefile: preconfigured makefile for convenient installation
 - ntripserver.c: c source file
 - README: Readme file for the ntripserver program
-- startntripserver.sh: shell script to start the ntripserver program
 
 
 NTRIP
