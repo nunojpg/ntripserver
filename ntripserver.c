@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.46 2009/02/10 12:20:09 stoecker Exp $
+ * $Id: ntripserver.c,v 1.47 2009/02/11 10:20:32 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.46 $";
-static char datestr[]     = "$Date: 2009/02/10 12:20:09 $";
+static char revisionstr[] = "$Revision: 1.47 $";
+static char datestr[]     = "$Date: 2009/02/11 10:20:32 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -135,7 +135,7 @@ static int udp_tim, udp_seq, udp_init;
 
 /* Forward references */
 static void send_receive_loop(sockettype sock, int outmode,
-  struct sockaddr * pcasterRTP, socklen_t length, int rtpssrc);
+  struct sockaddr * pcasterRTP, socklen_t length, unsigned int rtpssrc);
 static void usage(int, char *);
 static int  encode(char *buf, int size, const char *user, const char *pwd);
 static int  send_to_caster(char *input, sockettype socket, int input_size);
@@ -219,7 +219,7 @@ int main(int argc, char **argv)
   struct sockaddr_in local;
   int                client_port = 0;
   int                server_port = 0;
-  int                session = 0;
+  unsigned int       session = 0;
   socklen_t          len = 0;
   int                i = 0;
 
@@ -932,7 +932,7 @@ int main(int argc, char **argv)
       {
         case UDP:
           {
-            int session;
+            unsigned int session;
             char rtpbuf[1526];
             int i=12, j;
 
@@ -1316,7 +1316,7 @@ int main(int argc, char **argv)
               nBufferBytes = snprintf(szSendBuffer, sizeof(szSendBuffer),
                 "RECORD rtsp://%s%s/%s RTSP/1.0\r\n"
                 "CSeq: %d\r\n"
-                "Session: %d\r\n"
+                "Session: %u\r\n"
                 "\r\n",
                 casterouthost, rtsp_extension,  mountpoint,  udp_cseq++,
                 session);
@@ -1373,7 +1373,7 @@ int main(int argc, char **argv)
 }
 
 static void send_receive_loop(sockettype sock, int outmode, struct sockaddr* pcasterRTP,
-socklen_t length, int rtpssrc)
+socklen_t length, unsigned int rtpssrc)
 {
   int      nodata = 0;
   char     buffer[BUFSZ] = { 0 };
@@ -1578,7 +1578,7 @@ socklen_t length, int rtpssrc)
         nBufferBytes = 0;
       i = recv(socket_tcp, rtpbuf, sizeof(rtpbuf), 0);
       if(i >= 12 && (unsigned char)rtpbuf[0] == (2 << 6) && rtpssrc ==
-      (((unsigned char)rtpbuf[8]<<24)+((unsigned char)rtpbuf[9]<<16)
+      (unsigned int)(((unsigned char)rtpbuf[8]<<24)+((unsigned char)rtpbuf[9]<<16)
       +((unsigned char)rtpbuf[10]<<8)+(unsigned char)rtpbuf[11]))
       {
         if(rtpbuf[1] == 96)
@@ -1693,7 +1693,7 @@ socklen_t length, int rtpssrc)
         i = snprintf(buffer, sizeof(buffer),
         "GET_PARAMETER rtsp://%s%s/%s RTSP/1.0\r\n"
         "CSeq: %d\r\n"
-        "Session: %d\r\n"
+        "Session: %u\r\n"
         "\r\n",
         casterouthost, rtsp_extension,  mountpoint,  udp_cseq++, rtpssrc);
         if(i > (int)sizeof(buffer) || i < 0)
@@ -2281,7 +2281,7 @@ int session, char *rtsp_ext, int fallback)
       size_send_buf = snprintf(send_buf, sizeof(send_buf),
         "TEARDOWN rtsp://%s%s/%s RTSP/1.0\r\n"
         "CSeq: %d\r\n"
-        "Session: %d\r\n"
+        "Session: %u\r\n"
         "\r\n",
         caster_addr, rtsp_ext, mountpoint, udp_cseq++, session);
       if((size_send_buf >= (int)sizeof(send_buf)) || (size_send_buf < 0))
