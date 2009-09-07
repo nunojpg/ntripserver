@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.47 2009/02/11 10:20:32 stoecker Exp $
+ * $Id: ntripserver.c,v 1.48 2009/04/27 09:47:59 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.47 $";
-static char datestr[]     = "$Date: 2009/02/11 10:20:32 $";
+static char revisionstr[] = "$Revision: 1.48 $";
+static char datestr[]     = "$Date: 2009/04/27 09:47:59 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -436,18 +436,6 @@ int main(int argc, char **argv)
     }
     fprintf(stderr, "\n");
     usage(1, argv[0]);                   /* never returns */
-  }
-
-  if(outputmode != NTRIP1)
-  {
-     fprintf(stderr, "\nWARNING: *** NTRIP VERSION 2 PROTOCOL IS STILL"
-      " BETA AND MAY BE CHANGED ***\n\n");
-  }
-
-  if(ntrip_str && (outputmode == NTRIP1))
-  {
-     fprintf(stderr, "WARNING: OutputMode is Ntrip version 1.0"
-     " - Ntrip-STR will not be considered\n");
   }
 
   if((reconnect_sec_max > 0) && (reconnect_sec_max < 256))
@@ -968,7 +956,7 @@ int main(int argc, char **argv)
             "Connection: close\r\n"
             "Transfer-Encoding: chunked\r\n\r\n",
             mountpoint, casterouthost, AGENTSTRING,
-            revisionstr, authorization, ntrip_str ? "\r\nNtrip-STR: " : "",
+            revisionstr, authorization, ntrip_str ? (outputmode == NTRIP1 ? "\r\nSTR: " : "\r\nNtrip-STR: ") : "",
             ntrip_str);
             i += j;
             if(i > (int)sizeof(rtpbuf)-40 || j < 0) /* second check for old glibc */
