@@ -1,5 +1,6 @@
+#define WINDOWSVERSION
 /*
- * $Id: ntripserver.c,v 1.48 2009/04/27 09:47:59 stoecker Exp $
+ * $Id: ntripserver.c,v 1.49 2009/09/07 13:26:36 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +37,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.48 $";
-static char datestr[]     = "$Date: 2009/04/27 09:47:59 $";
+static char revisionstr[] = "$Revision: 1.49 $";
+static char datestr[]     = "$Date: 2009/09/07 13:26:36 $";
 
 #include <ctype.h>
 #include <errno.h>
@@ -110,7 +111,11 @@ enum OUTMODE { HTTP = 1, RTSP = 2, NTRIP1 = 3, UDP = 4, END };
 #define TIME_RESOLUTION 125
 
 static int ttybaud             = 19200;
+#ifndef WINDOWSVERSION
 static const char *ttyport     = "/dev/gps";
+#else
+static const char *ttyport     = "COM1";
+#endif
 static const char *filepath    = "/dev/stdin";
 static enum MODE inputmode     = INFILE;
 static int sisnet              = 31;
@@ -170,7 +175,6 @@ static HANDLE openserial(const char * tty, int baud);
 * Remarks:
 *
 */
-
 int main(int argc, char **argv)
 {
   int                c;
@@ -1842,99 +1846,43 @@ static int openserial(const char * tty, int blocksz, int baud)
 #else
 static HANDLE openserial(const char * tty, int baud)
 {
-  DCB dcb;
-  COMMTIMEOUTS cmt;
   char compath[15] = "";
 
   snprintf(compath, sizeof(compath), "\\\\.\\%s", tty);
-/*** opening the serial port ***/
-  gps_serial = CreateFile(compath, GENERIC_READ | GENERIC_WRITE, 0, 0,
-    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-  if(gps_serial == INVALID_HANDLE_VALUE)
+  if((gps_serial = CreateFile(compath, GENERIC_WRITE|GENERIC_READ
+  , 0, 0, OPEN_EXISTING, 0, 0)) == INVALID_HANDLE_VALUE)
   {
     fprintf(stderr, "ERROR: opening serial connection\n");
     return (INVALID_HANDLE_VALUE);
   }
-/*** configuring the serial port ***/
-  FillMemory(&dcb, sizeof(dcb), 0);
-  dcb.DCBlength = sizeof(dcb);
-  if(!GetCommState(gps_serial, &dcb))
+
+  DCB dcb;
+  memset(&dcb, 0, sizeof(dcb));
+  char str[100];
+  snprintf(str,sizeof(str),
+  "baud=%d parity=N data=8 stop=1 xon=off octs=off rts=off",
+  baud);
+
+  COMMTIMEOUTS ct = {1000, 1, 0, 0, 0};
+
+  if(!BuildCommDCB(str, &dcb))
   {
     fprintf(stderr, "ERROR: get serial attributes\n");
     return (INVALID_HANDLE_VALUE);
   }
-  switch (baud)
+  else if(!SetCommState(gps_serial, &dcb))
   {
-  case 110:
-    baud = CBR_110;
-    break;
-  case 300:
-    baud = CBR_300;
-    break;
-  case 600:
-    baud = CBR_600;
-    break;
-  case 1200:
-    baud = CBR_1200;
-    break;
-  case 2400:
-    baud = CBR_2400;
-    break;
-  case 4800:
-    baud = CBR_4800;
-    break;
-  case 9600:
-    baud = CBR_9600;
-    break;
-  case 14400:
-    baud = CBR_14400;
-    break;
-  case 19200:
-    baud = CBR_19200;
-    break;
-  case 38400:
-    baud = CBR_38400;
-    break;
-  case 56000:
-    baud = CBR_56000;
-    break;
-  case 57600:
-    baud = CBR_57600;
-    break;
-  case 115200:
-    baud = CBR_115200;
-    break;
-  case 128000:
-    baud = CBR_128000;
-    break;
-  case 256000:
-    baud = CBR_256000;
-    break;
-  default:
-    fprintf(stderr, "WARNING: Baud settings not useful, using 19200\n");
-    baud = CBR_19200;
-    break;
-  }
-  dcb.BaudRate = baud;
-  dcb.ByteSize = 8;
-  dcb.StopBits = ONESTOPBIT;
-  dcb.Parity   = NOPARITY;
-  if(!GetCommState(gps_serial, &dcb))
-  {
-    fprintf(stderr, "ERROR: get serial attributes\n");
+    fprintf(stderr, "ERROR: set serial attributes\n");
     return (INVALID_HANDLE_VALUE);
   }
-  FillMemory(&cmt, sizeof(cmt), 0);
-  cmt.ReadIntervalTimeout = 1000;
-  cmt.ReadTotalTimeoutMultiplier = 1;
-  cmt.ReadTotalTimeoutConstant = 0;
-  if(!SetCommTimeouts(gps_serial, &cmt))
+  else if(!SetCommTimeouts(gps_serial, &ct))
   {
     fprintf(stderr, "ERROR: set serial timeouts\n");
     return (INVALID_HANDLE_VALUE);
   }
+
   return (gps_serial);
-} /* openserial */
+}
 #endif
 
 /********************************************************************
@@ -1984,7 +1932,7 @@ void usage(int rc, char *name)
   fprintf(stderr, "       3 = File, 4 = SISNeT Data Server, 5 = UDP server, 6 = NTRIP Caster),\n");
   fprintf(stderr, "       mandatory\n\n");
   fprintf(stderr, "       <InputMode> = 1 (Serial Port):\n");
-  fprintf(stderr, "       -i <Device>       Serial input device, default: /dev/gps, mandatory if\n");
+  fprintf(stderr, "       -i <Device>       Serial input device, default: %s, mandatory if\n", ttyport);
   fprintf(stderr, "                         <InputMode>=1\n");
   fprintf(stderr, "       -b <BaudRate>     Serial input baud rate, default: 19200 bps, mandatory\n");
   fprintf(stderr, "                         if <InputMode>=1\n");
@@ -2001,7 +1949,7 @@ void usage(int rc, char *name)
   fprintf(stderr, "       -B Bind to incoming UDP stream, optional for <InputMode> = 5\n\n");
   fprintf(stderr, "       <InputMode> = 3 (File):\n");
   fprintf(stderr, "       -s <File>         File name to simulate stream by reading data from (log)\n");
-  fprintf(stderr, "                         file, default is /dev/stdin, mandatory for <InputMode> = 3\n\n");
+  fprintf(stderr, "                         file, default is %s, mandatory for <InputMode> = 3\n\n", filepath);
   fprintf(stderr, "       <InputMode> = 4 (SISNeT Data Server):\n");
   fprintf(stderr, "       -H <SisnetHost>   SISNeT Data Server name or address,\n");
   fprintf(stderr, "                         default: 131.176.49.142, mandatory if <InputMode> = 4\n");
