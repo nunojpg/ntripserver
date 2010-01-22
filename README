@@ -112,7 +112,7 @@ The user may call the program with the following options:
    3 = File, 4 = SISNeT Data Server, 5 = UDP server, 6 = NTRIP Caster),
    mandatory
 
-   <InputMode> = 1 (Serial Port):
+   <InputMode> = 1 (Serial Port): (using 8-N-1 = data bits-parity-stop bits)
    -i <Device>       Serial input device, default: /dev/gps, mandatory if
         	     <InputMode>=1
    -b <BaudRate>     Serial input baud rate, default: 19200 bps, mandatory
