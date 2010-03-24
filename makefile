@@ -1,5 +1,5 @@
 #!/usr/bin/make
-# $Id: makefile,v 1.8 2008/01/04 15:22:44 stuerze Exp $
+# $Id: makefile,v 1.9 2009/02/10 12:20:09 stoecker Exp $
 
 ifdef windir
 CC   = gcc
@@ -19,4 +19,7 @@ clean:
 	$(RM) -f ntripserver core
 
 archive:
+	zip -9 ntripserver.zip makefile ntripserver.c README startntripserver.sh
+
+tgzarchive:
 	tar -cvzf ntripserver.tgz makefile ntripserver.c README startntripserver.sh
