@@ -1,5 +1,5 @@
 /*
- * $Id: ntripserver.c,v 1.50 2010/01/21 09:00:49 stoecker Exp $
+ * $Id: ntripserver.c,v 1.51 2010/01/22 08:36:59 stoecker Exp $
  *
  * Copyright (c) 2003...2007
  * German Federal Agency for Cartography and Geodesy (BKG)
@@ -36,8 +36,8 @@
  */
 
 /* CVS revision and version */
-static char revisionstr[] = "$Revision: 1.50 $";
-static char datestr[]     = "$Date: 2010/01/21 09:00:49 $";
+static char revisionstr[] = "$Revision: 1.51 $";
+static char datestr[]     = "$Date: 2010/01/22 08:36:59 $";
 
 #include <ctype.h>
 #include <errno.h>

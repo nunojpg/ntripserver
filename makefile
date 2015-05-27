@@ -19,7 +19,4 @@ clean:
 	$(RM) -f ntripserver core
 
 archive:
-	zip -9 ntripserver.zip makefile ntripserver.c README startntripserver.sh
-
-tgzarchive:
 	tar -cvzf ntripserver.tgz makefile ntripserver.c README startntripserver.sh
